@@ -1,0 +1,29 @@
+# Variáveis de ambiente (contém senhas - NUNCA commitar!)
+.env
+
+# Logs
+logs/
+*.log
+
+# Captchas capturados (debug)
+captchas_capturados/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Camoufox cache
+.cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Sistema
+.DS_Store
+Thumbs.db
