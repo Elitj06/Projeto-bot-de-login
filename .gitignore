@@ -27,3 +27,13 @@ venv/
 # Sistema
 .DS_Store
 Thumbs.db
+# Debug/output
+seap_login.html
+seap_login.png
+inspect_output.txt
+__pycache__/
+*.pyc
+captchas_capturados/
+logs/
+*.db
+.env

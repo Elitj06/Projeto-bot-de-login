@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SEAP Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: { 700: '#1e293b', 800: '#1a1a2e', 900: '#0f0f1a' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background: #0f0f1a; }
+        .pulse-dot { animation: pulse-dot 1.5s infinite; }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .status-bar { transition: all 0.3s ease; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="min-h-screen text-gray-200">
+
+<!-- Header -->
+<header class="border-b border-gray-700 bg-dark-800 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-3 h-3 rounded-full bg-green-500 pulse-dot" id="ws-indicator"></div>
+            <h1 class="text-xl font-bold text-white">⚙️ SEAP Bot Dashboard</h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <span class="text-sm text-gray-400" id="connection-status">Conectando...</span>
+            <span class="text-sm text-gray-500" id="clock"></span>
+        </div>
+    </div>
+</header>
+
+<!-- Tabs -->
+<nav class="border-b border-gray-700 bg-dark-800">
+    <div class="max-w-7xl mx-auto px-4 flex gap-1">
+        <button onclick="switchTab('users')" class="tab-btn px-4 py-3 text-sm font-medium text-blue-400 border-b-2 border-blue-400" data-tab="users">
+            👥 Usuários
+        </button>
+        <button onclick="switchTab('vagas')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200" data-tab="vagas">
+            📋 Vagas
+        </button>
+        <button onclick="switchTab('logs')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200" data-tab="logs">
+            📜 Logs
+        </button>
+        <button onclick="switchTab('settings')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200" data-tab="settings">
+            ⚙️ Configurações
+        </button>
+    </div>
+</nav>
+
+<!-- Main Content -->
+<main class="max-w-7xl mx-auto px-4 py-6">
+
+    <!-- Users Tab -->
+    <div id="tab-users" class="tab-content">
+        <!-- Add User Form -->
+        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+            <h2 class="text-lg font-semibold mb-3 text-white">➕ Novo Usuário</h2>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <input type="text" id="new-username" placeholder="Usuário SEAP" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+                <input type="password" id="new-password" placeholder="Senha SEAP" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+                <input type="text" id="new-proxy" placeholder="Proxy SOCKS5 (opcional)" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+                <button onclick="addUser()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                    Cadastrar
+                </button>
+            </div>
+        </div>
+
+        <!-- Bulk Actions -->
+        <div class="flex gap-3 mb-4">
+            <button onclick="loginAll()" class="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                🚀 Login Todos
+            </button>
+            <button onclick="toggleAllHuman()" class="bg-purple-600 hover:bg-purple-700 text-white rounded px-4 py-2 text-sm font-medium transition" id="global-human-btn">
+                🧑 Modo Humano: OFF
+            </button>
+        </div>
+
+        <!-- Users Table -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <table class="w-full">
+                <thead class="bg-gray-700">
+                    <tr>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Usuário</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Proxy</th>
+                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Humano</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Tempo</th>
+                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Ações</th>
+                    </tr>
+                </thead>
+                <tbody id="users-table" class="divide-y divide-gray-700">
+                    <tr>
+                        <td colspan="6" class="px-4 py-8 text-center text-gray-500">
+                            Carregando usuários...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Vagas Tab -->
+    <div id="tab-vagas" class="tab-content hidden">
+        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+            <h2 class="text-lg font-semibold mb-3 text-white">📋 Vagas Disponíveis</h2>
+            <p class="text-gray-400 text-sm mb-4">Selecione um usuário para ver/buscar vagas.</p>
+            <div class="flex gap-3 items-center">
+                <select id="vaga-user-select" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
+                    <option value="">Selecione um usuário...</option>
+                </select>
+                <button onclick="fetchVagas()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                    🔍 Buscar Vagas
+                </button>
+            </div>
+        </div>
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <table class="w-full">
+                <thead class="bg-gray-700">
+                    <tr>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Título</th>
+                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Descrição</th>
+                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
+                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Ação</th>
+                    </tr>
+                </thead>
+                <tbody id="vagas-table" class="divide-y divide-gray-700">
+                    <tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">Selecione um usuário e busque vagas.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Logs Tab -->
+    <div id="tab-logs" class="tab-content hidden">
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-lg font-semibold text-white">📜 Logs Recentes</h2>
+                <button onclick="loadLogs()" class="text-sm text-blue-400 hover:text-blue-300">🔄 Atualizar</button>
+            </div>
+            <div id="logs-container" class="max-h-[600px] overflow-y-auto p-4 font-mono text-xs space-y-1">
+                <div class="text-gray-500">Carregando logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div id="tab-settings" class="tab-content hidden">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h2 class="text-lg font-semibold mb-3 text-white">🔑 CapSolver</h2>
+                <input type="text" id="capsolver-key" placeholder="API Key do CapSolver" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 mb-3">
+                <p class="text-xs text-gray-500">Configure via arquivo .env (CAPSOLVER_API_KEY)</p>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h2 class="text-lg font-semibold mb-3 text-white">🌐 Proxy Global</h2>
+                <input type="text" id="global-proxy" placeholder="socks5://user:pass@host:port" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 mb-3">
+                <p class="text-xs text-gray-500">Proxy SOCKS5 usado como fallback para usuários sem proxy próprio.</p>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h2 class="text-lg font-semibold mb-3 text-white">⚡ Sistema</h2>
+                <div class="space-y-2 text-sm">
+                    <div class="flex justify-between"><span class="text-gray-400">IP do Servidor:</span><span id="server-ip" class="text-white">5.78.198.180</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Porta:</span><span class="text-white">5000</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">WebSocket:</span><span id="ws-status-text" class="text-yellow-400">Conectando...</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Usuários:</span><span id="total-users" class="text-white">0</span></div>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h2 class="text-lg font-semibold mb-3 text-white">ℹ️ Info</h2>
+                <div class="space-y-2 text-sm text-gray-400">
+                    <p>Bot SEAP v2 — Camoufox + CapSolver</p>
+                    <p>O site bloqueia IPs fora do Brasil.</p>
+                    <p>Configure proxy SOCKS5 por usuário para contornar.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<!-- Toast container -->
+<div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
