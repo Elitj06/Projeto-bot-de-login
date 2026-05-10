@@ -19,11 +19,14 @@ from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 
 from dashboard.models import database as db
+from dashboard.api.auth import auth_bp, _ensure_admin_exists
 from dashboard.api.users import users_bp
 from dashboard.api.login import login_bp, set_login_service
 from dashboard.api.vagas import vagas_bp
+from dashboard.api.proxies import proxies_bp
 from dashboard.services.login_service import LoginService
 from dashboard.services.session_manager import session_manager
+from dashboard.middleware.auth import is_auth_whitelisted, verify_token
 from core.logger import LoggerFactory
 
 logger = LoggerFactory.get_logger(__name__)
@@ -36,8 +39,9 @@ def create_app() -> tuple[Flask, SocketIO]:
     Returns:
         Tupla (app, socketio)
     """
-    # Inicializa banco
+    # Inicializa banco + admin
     db.init_db()
+    _ensure_admin_exists()
 
     # Flask app
     app = Flask(
@@ -70,9 +74,11 @@ def create_app() -> tuple[Flask, SocketIO]:
     set_login_service(login_service)
 
     # --- Registra blueprints ---
+    app.register_blueprint(auth_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(login_bp)
     app.register_blueprint(vagas_bp)
+    app.register_blueprint(proxies_bp)
 
     # --- Rotas de páginas ---
     @app.route("/")
@@ -87,6 +93,29 @@ def create_app() -> tuple[Flask, SocketIO]:
     def logs_page():
         """Retorna logs recentes como JSON."""
         return {"logs": db.get_recent_logs(limit=200)}
+
+    # --- Auth middleware (before_request) ---
+    @app.before_request
+    def check_auth():
+        """Verifica JWT em todas as rotas /api/* exceto whitelist."""
+        if not request.path.startswith("/api/"):
+            return None
+        if request.path.startswith("/api/auth/"):
+            return None
+        if is_auth_whitelisted(request.path):
+            return None
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Autenticação necessária"}), 401
+
+        payload = verify_token(auth_header[7:])
+        if not payload:
+            return jsonify({"error": "Token inválido ou expirado"}), 401
+
+        from flask import g
+        g.admin = payload
+        return None
 
     # --- WebSocket handlers ---
     @socketio.on("connect")

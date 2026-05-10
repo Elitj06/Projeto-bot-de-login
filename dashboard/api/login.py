@@ -69,13 +69,28 @@ def login_all():
     })
 
 
+@login_bp.route("/execution-plan", methods=["GET"])
+def execution_plan():
+    """Retorna o plano de execução para login em massa."""
+    users = db.get_active_users()
+    proxies = db.list_proxies()
+    active_proxies = [p["url"] for p in proxies if p["is_active"]]
+
+    from dashboard.services.proxy_manager import LoginScheduler
+    scheduler = LoginScheduler()
+    plan = scheduler.get_execution_plan(users, active_proxies)
+    return jsonify(plan)
+
+
 @login_bp.route("/status", methods=["GET"])
 def get_status():
     """Retorna status geral do sistema."""
     users = db.list_users()
     total = len(users)
+    active = sum(1 for u in users if u.get("is_active", 1))
     human_count = sum(1 for u in users if u["human_mode"])
     with_proxy = sum(1 for u in users if u.get("proxy"))
+    auto_login = sum(1 for u in users if u.get("auto_login", 0))
 
     # Sessões ativas
     active_sessions = 0
@@ -84,12 +99,19 @@ def get_status():
         if session and session["status"] == "active":
             active_sessions += 1
 
+    # Proxy pool
+    proxies = db.list_proxies()
+    active_proxies = sum(1 for p in proxies if p["is_active"])
+
     recent_logs = db.get_recent_logs(limit=5)
 
     return jsonify({
         "total_users": total,
+        "active_users": active,
+        "auto_login_users": auto_login,
         "human_mode_count": human_count,
         "with_proxy": with_proxy,
         "active_sessions": active_sessions,
+        "proxy_pool": {"total": len(proxies), "active": active_proxies},
         "recent_logs": recent_logs,
     })

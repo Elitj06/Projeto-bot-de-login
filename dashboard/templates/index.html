@@ -25,13 +25,40 @@
             0%, 100% { opacity: 1; }
             50% { opacity: 0.3; }
         }
-        .status-bar { transition: all 0.3s ease; }
         .fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .toggle-track { width: 36px; height: 20px; border-radius: 10px; cursor: pointer; transition: background 0.2s; position: relative; }
+        .toggle-track.active { background: #22c55e; }
+        .toggle-track.inactive { background: #4b5563; }
+        .toggle-thumb { width: 16px; height: 16px; border-radius: 50%; background: white; position: absolute; top: 2px; transition: left 0.2s; }
+        .toggle-track.active .toggle-thumb { left: 18px; }
+        .toggle-track.inactive .toggle-thumb { left: 2px; }
     </style>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="min-h-screen text-gray-200">
+
+<!-- Login Screen -->
+<div id="login-screen" class="min-h-screen flex items-center justify-center">
+    <div class="bg-gray-800 rounded-lg p-8 border border-gray-700 w-full max-w-sm">
+        <div class="text-center mb-6">
+            <div class="text-3xl mb-2">🔒</div>
+            <h1 class="text-xl font-bold text-white">SEAP Bot Dashboard</h1>
+            <p class="text-sm text-gray-400 mt-1">Faça login como administrador</p>
+        </div>
+        <div class="space-y-3">
+            <input type="text" id="login-user" placeholder="Usuário" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+            <input type="password" id="login-pass" placeholder="Senha" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none" onkeydown="if(event.key==='Enter')doLogin()">
+            <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition" id="login-btn">
+                Entrar
+            </button>
+            <p id="login-error" class="text-red-400 text-xs text-center hidden"></p>
+        </div>
+    </div>
+</div>
+
+<!-- Main App (hidden until login) -->
+<div id="main-app" class="hidden">
 
 <!-- Header -->
 <header class="border-b border-gray-700 bg-dark-800 sticky top-0 z-50">
@@ -43,24 +70,35 @@
         <div class="flex items-center gap-4">
             <span class="text-sm text-gray-400" id="connection-status">Conectando...</span>
             <span class="text-sm text-gray-500" id="clock"></span>
+            <button onclick="doLogout()" class="text-xs text-red-400 hover:text-red-300">Sair</button>
         </div>
     </div>
 </header>
 
+<!-- Stats Bar -->
+<div class="bg-gray-800 border-b border-gray-700">
+    <div class="max-w-7xl mx-auto px-4 py-2 flex gap-6 text-xs">
+        <div><span class="text-gray-500">Usuários:</span> <span id="stat-users" class="text-white font-medium">0</span></div>
+        <div><span class="text-gray-500">Ativos:</span> <span id="stat-active" class="text-green-400 font-medium">0</span></div>
+        <div><span class="text-gray-500">Proxies:</span> <span id="stat-proxies" class="text-blue-400 font-medium">0</span></div>
+        <div><span class="text-gray-500">Sessões:</span> <span id="stat-sessions" class="text-yellow-400 font-medium">0</span></div>
+    </div>
+</div>
+
 <!-- Tabs -->
 <nav class="border-b border-gray-700 bg-dark-800">
-    <div class="max-w-7xl mx-auto px-4 flex gap-1">
-        <button onclick="switchTab('users')" class="tab-btn px-4 py-3 text-sm font-medium text-blue-400 border-b-2 border-blue-400" data-tab="users">
+    <div class="max-w-7xl mx-auto px-4 flex gap-1 overflow-x-auto">
+        <button onclick="switchTab('users')" class="tab-btn px-4 py-3 text-sm font-medium text-blue-400 border-b-2 border-blue-400 whitespace-nowrap" data-tab="users">
             👥 Usuários
         </button>
-        <button onclick="switchTab('vagas')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200" data-tab="vagas">
-            📋 Vagas
+        <button onclick="switchTab('proxies')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="proxies">
+            🌐 Pool de Proxies
         </button>
-        <button onclick="switchTab('logs')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200" data-tab="logs">
+        <button onclick="switchTab('plan')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="plan">
+            📊 Plano de Execução
+        </button>
+        <button onclick="switchTab('logs')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="logs">
             📜 Logs
-        </button>
-        <button onclick="switchTab('settings')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200" data-tab="settings">
-            ⚙️ Configurações
         </button>
     </div>
 </nav>
@@ -72,11 +110,15 @@
     <div id="tab-users" class="tab-content">
         <!-- Add User Form -->
         <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
-            <h2 class="text-lg font-semibold mb-3 text-white">➕ Novo Usuário</h2>
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <h2 class="text-lg font-semibold mb-3 text-white">➕ Novo Usuário SEAP</h2>
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
                 <input type="text" id="new-username" placeholder="Usuário SEAP" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
                 <input type="password" id="new-password" placeholder="Senha SEAP" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
                 <input type="text" id="new-proxy" placeholder="Proxy SOCKS5 (opcional)" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+                <select id="new-auto-login" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white">
+                    <option value="0">Login Manual</option>
+                    <option value="1">Auto Login</option>
+                </select>
                 <button onclick="addUser()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
                     Cadastrar
                 </button>
@@ -84,67 +126,110 @@
         </div>
 
         <!-- Bulk Actions -->
-        <div class="flex gap-3 mb-4">
-            <button onclick="loginAll()" class="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                🚀 Login Todos
+        <div class="flex gap-3 mb-4 flex-wrap">
+            <button onclick="loginAllActive()" class="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                🚀 Login Todos Ativos
             </button>
-            <button onclick="toggleAllHuman()" class="bg-purple-600 hover:bg-purple-700 text-white rounded px-4 py-2 text-sm font-medium transition" id="global-human-btn">
-                🧑 Modo Humano: OFF
+            <button onclick="showExecutionPlan()" class="bg-indigo-600 hover:bg-indigo-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                📊 Ver Plano de Execução
             </button>
         </div>
 
         <!-- Users Table -->
-        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-x-auto">
             <table class="w-full">
                 <thead class="bg-gray-700">
                     <tr>
-                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Usuário</th>
-                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Proxy</th>
-                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Humano</th>
-                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
-                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Tempo</th>
-                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Ações</th>
+                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Usuário</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Ativo</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Auto</th>
+                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Proxy</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Humano</th>
+                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
+                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Tempo</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Ações</th>
                     </tr>
                 </thead>
                 <tbody id="users-table" class="divide-y divide-gray-700">
-                    <tr>
-                        <td colspan="6" class="px-4 py-8 text-center text-gray-500">
-                            Carregando usuários...
-                        </td>
-                    </tr>
+                    <tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">Carregando...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
 
-    <!-- Vagas Tab -->
-    <div id="tab-vagas" class="tab-content hidden">
+    <!-- Proxy Pool Tab -->
+    <div id="tab-proxies" class="tab-content hidden">
+        <!-- Add Proxy -->
         <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
-            <h2 class="text-lg font-semibold mb-3 text-white">📋 Vagas Disponíveis</h2>
-            <p class="text-gray-400 text-sm mb-4">Selecione um usuário para ver/buscar vagas.</p>
-            <div class="flex gap-3 items-center">
-                <select id="vaga-user-select" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:border-blue-500 focus:outline-none">
-                    <option value="">Selecione um usuário...</option>
+            <h2 class="text-lg font-semibold mb-3 text-white">🌐 Adicionar Proxy</h2>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
+                <input type="text" id="new-proxy-url" placeholder="socks5://user:pass@host:port" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+                <input type="text" id="new-proxy-label" placeholder="Label (ex: BR-SP-01)" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
+                <select id="new-proxy-country" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white">
+                    <option value="BR">🇧🇷 Brasil</option>
+                    <option value="US">🇺🇸 EUA</option>
+                    <option value="OTHER">🌍 Outro</option>
                 </select>
-                <button onclick="fetchVagas()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                    🔍 Buscar Vagas
+                <button onclick="addProxy()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                    Adicionar
                 </button>
             </div>
+            <details class="text-sm">
+                <summary class="text-gray-400 cursor-pointer hover:text-gray-200">📝 Importar em lote</summary>
+                <div class="mt-3 space-y-2">
+                    <textarea id="batch-proxies" rows="5" placeholder="Um proxy por linha&#10;socks5://user:pass@host:port&#10;host:port:user:pass" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none font-mono"></textarea>
+                    <button onclick="addProxiesBatch()" class="bg-purple-600 hover:bg-purple-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                        Importar Todos
+                    </button>
+                </div>
+            </details>
         </div>
-        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+
+        <!-- Proxy Actions -->
+        <div class="flex gap-3 mb-4">
+            <button onclick="testAllProxies()" class="bg-yellow-600 hover:bg-yellow-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                🧪 Testar Todos
+            </button>
+            <button onclick="loadProxies()" class="bg-gray-600 hover:bg-gray-500 text-white rounded px-4 py-2 text-sm font-medium transition">
+                🔄 Atualizar
+            </button>
+        </div>
+
+        <!-- Proxies Table -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-x-auto">
             <table class="w-full">
                 <thead class="bg-gray-700">
                     <tr>
-                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Título</th>
-                        <th class="text-left px-4 py-3 text-xs font-medium text-gray-300 uppercase">Descrição</th>
-                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
-                        <th class="text-center px-4 py-3 text-xs font-medium text-gray-300 uppercase">Ação</th>
+                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Label</th>
+                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">URL</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">País</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Atribuições</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Ações</th>
                     </tr>
                 </thead>
-                <tbody id="vagas-table" class="divide-y divide-gray-700">
-                    <tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">Selecione um usuário e busque vagas.</td></tr>
+                <tbody id="proxies-table" class="divide-y divide-gray-700">
+                    <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">Carregando proxies...</td></tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- Execution Plan Tab -->
+    <div id="tab-plan" class="tab-content hidden">
+        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-white">📊 Plano de Execução de Login</h2>
+                <button onclick="showExecutionPlan()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                    🔄 Recalcular
+                </button>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4" id="plan-summary">
+                <!-- filled by JS -->
+            </div>
+        </div>
+        <div id="plan-batches" class="space-y-4">
+            <!-- filled by JS -->
         </div>
     </div>
 
@@ -161,39 +246,9 @@
         </div>
     </div>
 
-    <!-- Settings Tab -->
-    <div id="tab-settings" class="tab-content hidden">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <h2 class="text-lg font-semibold mb-3 text-white">🔑 CapSolver</h2>
-                <input type="text" id="capsolver-key" placeholder="API Key do CapSolver" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 mb-3">
-                <p class="text-xs text-gray-500">Configure via arquivo .env (CAPSOLVER_API_KEY)</p>
-            </div>
-            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <h2 class="text-lg font-semibold mb-3 text-white">🌐 Proxy Global</h2>
-                <input type="text" id="global-proxy" placeholder="socks5://user:pass@host:port" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 mb-3">
-                <p class="text-xs text-gray-500">Proxy SOCKS5 usado como fallback para usuários sem proxy próprio.</p>
-            </div>
-            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <h2 class="text-lg font-semibold mb-3 text-white">⚡ Sistema</h2>
-                <div class="space-y-2 text-sm">
-                    <div class="flex justify-between"><span class="text-gray-400">IP do Servidor:</span><span id="server-ip" class="text-white">5.78.198.180</span></div>
-                    <div class="flex justify-between"><span class="text-gray-400">Porta:</span><span class="text-white">5000</span></div>
-                    <div class="flex justify-between"><span class="text-gray-400">WebSocket:</span><span id="ws-status-text" class="text-yellow-400">Conectando...</span></div>
-                    <div class="flex justify-between"><span class="text-gray-400">Usuários:</span><span id="total-users" class="text-white">0</span></div>
-                </div>
-            </div>
-            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
-                <h2 class="text-lg font-semibold mb-3 text-white">ℹ️ Info</h2>
-                <div class="space-y-2 text-sm text-gray-400">
-                    <p>Bot SEAP v2 — Camoufox + CapSolver</p>
-                    <p>O site bloqueia IPs fora do Brasil.</p>
-                    <p>Configure proxy SOCKS5 por usuário para contornar.</p>
-                </div>
-            </div>
-        </div>
-    </div>
 </main>
+
+</div><!-- end main-app -->
 
 <!-- Toast container -->
 <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>

@@ -68,7 +68,7 @@ def delete_user(user_id: str):
 def update_user(user_id: str):
     """Atualiza dados do usuário."""
     data = request.get_json(silent=True) or {}
-    allowed = {"username", "proxy"}
+    allowed = {"username", "proxy", "is_active", "auto_login"}
 
     # Password atualiza como password_encrypted
     if "password" in data:
@@ -87,6 +87,29 @@ def update_user(user_id: str):
         return jsonify({"error": "Usuário não encontrado"}), 404
     user.pop("password_encrypted", None)
     return jsonify({"user": user, "message": "Usuário atualizado"})
+
+
+@users_bp.route("/<user_id>/toggle-active", methods=["POST"])
+def toggle_active(user_id: str):
+    """Ativa ou desativa o bot para um usuário."""
+    user = db.toggle_user_active(user_id)
+    if not user:
+        return jsonify({"error": "Usuário não encontrado"}), 404
+    user.pop("password_encrypted", None)
+    status = "ATIVO" if user["is_active"] else "INATIVO"
+    db.add_log(user_id, "toggle_active", "success", f"Usuário {status}")
+    return jsonify({"user": user, "message": f"Bot {status} para {user['username']}"})
+
+
+@users_bp.route("/<user_id>/toggle-auto-login", methods=["POST"])
+def toggle_auto_login(user_id: str):
+    """Ativa ou desativa login automático para um usuário."""
+    user = db.toggle_user_auto_login(user_id)
+    if not user:
+        return jsonify({"error": "Usuário não encontrado"}), 404
+    user.pop("password_encrypted", None)
+    status = "ON" if user["auto_login"] else "OFF"
+    return jsonify({"user": user, "message": f"Auto-login {status} para {user['username']}"})
 
 
 @users_bp.route("/<user_id>/toggle-human", methods=["POST"])

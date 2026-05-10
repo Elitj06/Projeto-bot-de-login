@@ -39,6 +39,8 @@ def init_db() -> None:
                 password_encrypted TEXT NOT NULL,
                 proxy TEXT DEFAULT NULL,
                 human_mode INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                auto_login INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -63,6 +65,25 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS admins (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS proxy_pool (
+                id TEXT PRIMARY KEY,
+                url TEXT NOT NULL UNIQUE,
+                proxy_type TEXT DEFAULT 'socks5',
+                country TEXT DEFAULT 'BR',
+                label TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                assigned_count INTEGER DEFAULT 0,
+                last_check TEXT,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS vagas (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -75,6 +96,18 @@ def init_db() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
         """)
+        conn.commit()
+
+        # Migrações para tabelas existentes
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN auto_login INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
         conn.commit()
         logger.info("Banco de dados inicializado com sucesso")
     finally:
@@ -135,7 +168,7 @@ def list_users() -> list[dict]:
 
 def update_user(user_id: str, **kwargs) -> Optional[dict]:
     """Atualiza campos do usuário. Retorna o usuário atualizado ou None."""
-    allowed = {"username", "password_encrypted", "proxy", "human_mode"}
+    allowed = {"username", "password_encrypted", "proxy", "human_mode", "is_active", "auto_login"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return get_user(user_id)
@@ -319,5 +352,170 @@ def mark_vaga_candidatada(vaga_id: str) -> Optional[dict]:
         )
         conn.commit()
         return get_vaga(vaga_id)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Admins
+# ---------------------------------------------------------------------------
+
+def create_admin(username: str, password_hash: str) -> dict:
+    """Cria um admin."""
+    admin_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO admins (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (admin_id, username, password_hash, now),
+        )
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM admins WHERE id = ?", (admin_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def get_admin_by_username(username: str) -> Optional[dict]:
+    """Busca admin por username."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM admins WHERE username = ?", (username,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_admin_password(admin_id: str, new_hash: str) -> None:
+    """Atualiza senha do admin."""
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE admins SET password_hash = ? WHERE id = ?", (new_hash, admin_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Proxy Pool
+# ---------------------------------------------------------------------------
+
+def create_proxy(url: str, country: str = "BR", proxy_type: str = "socks5", label: str = "") -> dict:
+    """Adiciona proxy ao pool."""
+    proxy_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO proxy_pool (id, url, proxy_type, country, label, is_active, assigned_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 0, ?)",
+            (proxy_id, url, proxy_type, country, label, now),
+        )
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM proxy_pool WHERE id = ?", (proxy_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def list_proxies() -> list[dict]:
+    """Lista todos os proxies do pool."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM proxy_pool ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_proxy(proxy_id: str) -> Optional[dict]:
+    """Busca proxy por ID."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM proxy_pool WHERE id = ?", (proxy_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_proxy_by_url(url: str) -> Optional[dict]:
+    """Busca proxy pela URL."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM proxy_pool WHERE url = ?", (url,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_least_used_proxy() -> Optional[dict]:
+    """Retorna o proxy ativo menos usado (round-robin simples)."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM proxy_pool WHERE is_active = 1 ORDER BY assigned_count ASC, last_check ASC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_proxy(proxy_id: str, **kwargs) -> Optional[dict]:
+    """Atualiza campos do proxy."""
+    allowed = {"url", "country", "proxy_type", "label", "is_active", "assigned_count", "last_check"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return get_proxy(proxy_id)
+
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [proxy_id]
+
+    conn = get_connection()
+    try:
+        conn.execute(f"UPDATE proxy_pool SET {set_clause} WHERE id = ?", values)
+        conn.commit()
+        return get_proxy(proxy_id)
+    finally:
+        conn.close()
+
+
+def delete_proxy(proxy_id: str) -> bool:
+    """Remove proxy do pool."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute("DELETE FROM proxy_pool WHERE id = ?", (proxy_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# User Activation
+# ---------------------------------------------------------------------------
+
+def toggle_user_active(user_id: str) -> Optional[dict]:
+    """Alterna is_active entre 0 e 1."""
+    user = get_user(user_id)
+    if not user:
+        return None
+    new_val = 0 if user.get("is_active", 1) else 1
+    return update_user(user_id, is_active=new_val)
+
+
+def toggle_user_auto_login(user_id: str) -> Optional[dict]:
+    """Alterna auto_login entre 0 e 1."""
+    user = get_user(user_id)
+    if not user:
+        return None
+    new_val = 0 if user.get("auto_login", 0) else 1
+    return update_user(user_id, auto_login=new_val)
+
+
+def get_active_users() -> list[dict]:
+    """Retorna apenas usuários ativos."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM users WHERE is_active = 1 ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()

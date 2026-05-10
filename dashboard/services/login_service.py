@@ -113,29 +113,63 @@ class LoginService:
             return {"success": False, "message": error_msg, "elapsed_seconds": round(elapsed, 1)}
 
     async def execute_login_all(self) -> list[dict]:
-        """Executa login de todos os usuários em paralelo."""
-        users = db.list_users()
+        """Executa login de todos os usuários ATIVOS em paralelo."""
+        users = db.get_active_users()
         if not users:
             return []
 
         self._emit("__all__", "status", {"status": "batch_start", "total": len(users)})
 
-        tasks = []
-        for user in users:
-            task = asyncio.create_task(self.execute_login(user["id"]))
-            self._active_tasks[user["id"]] = task
-            tasks.append((user["id"], task))
+        # Busca proxies do pool para rotação
+        proxies = db.list_proxies()
+        active_proxies = [p["url"] for p in proxies if p["is_active"]]
+
+        from dashboard.services.proxy_manager import LoginScheduler
+        scheduler = LoginScheduler()
+
+        # Se há proxies no pool, atribui automaticamente
+        if active_proxies:
+            batches = scheduler.calculate_batches(users, active_proxies)
+        else:
+            # Sem pool — usa proxy individual de cada usuário
+            batches = [[u] for u in users]
 
         results = []
-        for user_id, task in tasks:
-            try:
-                result = await task
-                result["user_id"] = user_id
-                results.append(result)
-            except Exception as e:
-                results.append({"user_id": user_id, "success": False, "message": str(e)})
-            finally:
-                self._active_tasks.pop(user_id, None)
+        for batch_idx, batch in enumerate(batches):
+            tasks = []
+            for user in batch:
+                # Usa proxy do escalonador ou do cadastro do usuário
+                proxy = user.get("_assigned_proxy") or user.get("proxy")
+                if proxy:
+                    db.update_user(user["id"], proxy=proxy)
+
+                task = asyncio.create_task(self.execute_login(user["id"]))
+                self._active_tasks[user["id"]] = task
+                tasks.append((user["id"], task))
+
+                # Stagger entre logins do mesmo lote
+                if len(batch) > 1:
+                    await asyncio.sleep(2.0)
+
+            for user_id, task in tasks:
+                try:
+                    result = await task
+                    result["user_id"] = user_id
+                    results.append(result)
+                except Exception as e:
+                    results.append({"user_id": user_id, "success": False, "message": str(e)})
+                finally:
+                    self._active_tasks.pop(user_id, None)
+
+            # Delay entre lotes
+            if batch_idx < len(batches) - 1:
+                self._emit("__all__", "status", {
+                    "status": "batch_wait",
+                    "batch": batch_idx + 1,
+                    "total_batches": len(batches),
+                    "wait_seconds": 45,
+                })
+                await asyncio.sleep(45)
 
         self._emit("__all__", "status", {"status": "batch_complete", "results": results})
         return results
