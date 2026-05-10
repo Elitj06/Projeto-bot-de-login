@@ -84,6 +84,24 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS user_schedules (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL UNIQUE,
+                schedule_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS sniper_sessions (
+                id TEXT PRIMARY KEY,
+                status TEXT DEFAULT 'idle',
+                target_time TEXT,
+                ntp_offset_ms REAL DEFAULT 0,
+                results_json TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS vagas (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
@@ -516,6 +534,121 @@ def get_active_users() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM users WHERE is_active = 1 ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# User Schedules
+# ---------------------------------------------------------------------------
+
+def save_schedule(user_id: str, schedule_json: str) -> dict:
+    """Salva ou atualiza a agenda de um usuário."""
+    import json as _json
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        existing = conn.execute("SELECT * FROM user_schedules WHERE user_id = ?", (user_id,)).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE user_schedules SET schedule_json=?, updated_at=? WHERE user_id=?",
+                (schedule_json, now, user_id),
+            )
+        else:
+            sid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO user_schedules (id, user_id, schedule_json, updated_at) VALUES (?, ?, ?, ?)",
+                (sid, user_id, schedule_json, now),
+            )
+        conn.commit()
+        row = conn.execute("SELECT * FROM user_schedules WHERE user_id = ?", (user_id,)).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def get_schedule(user_id: str) -> Optional[dict]:
+    """Busca agenda de um usuário."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM user_schedules WHERE user_id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_all_schedules() -> list[dict]:
+    """Retorna todas as agendas."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT us.*, u.username FROM user_schedules us
+            JOIN users u ON us.user_id = u.id
+            ORDER BY u.username
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_schedule(user_id: str) -> bool:
+    """Remove agenda de um usuário."""
+    conn = get_connection()
+    try:
+        cursor = conn.execute("DELETE FROM user_schedules WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Sniper Sessions
+# ---------------------------------------------------------------------------
+
+def create_sniper_session(session_id: str, target_time: str, ntp_offset_ms: float = 0) -> dict:
+    """Cria registro de sessão sniper."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO sniper_sessions (id, status, target_time, ntp_offset_ms, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "armed", target_time, ntp_offset_ms, now),
+        )
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM sniper_sessions WHERE id = ?", (session_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+def update_sniper_session(session_id: str, **kwargs) -> Optional[dict]:
+    """Atualiza sessão sniper."""
+    allowed = {"status", "ntp_offset_ms", "results_json", "completed_at"}
+    fields = {k: v for k, v in kwargs.items() if k in allowed}
+    if not fields:
+        return None
+
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [session_id]
+
+    conn = get_connection()
+    try:
+        conn.execute(f"UPDATE sniper_sessions SET {set_clause} WHERE id = ?", values)
+        conn.commit()
+        row = conn.execute("SELECT * FROM sniper_sessions WHERE id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_sniper_sessions(limit: int = 20) -> list[dict]:
+    """Lista sessões sniper recentes."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM sniper_sessions ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()

@@ -1,21 +1,24 @@
 /**
- * SEAP Bot Dashboard v3 — Client-side JavaScript.
- * Admin auth, proxy pool, user activation, execution plan.
+ * SEAP Sniper Dashboard v4 — Full rewrite.
+ * Sniper engine, calendar, NTP sync, real-time countdown.
  */
 const API = "";
 let socket = null;
 let jwtToken = localStorage.getItem("seap_jwt") || null;
 let userStatuses = {};
+let sniperLog = [];
+let countdownInterval = null;
+let currentScheduleUserId = null;
+
+const DAYS = ["seg","ter","qua","qui","sex","sab","dom"];
+const DAY_LABELS = {seg:"Segunda",ter:"Terça",qua:"Quarta",qui:"Quinta",sex:"Sexta",sab:"Sábado",dom:"Domingo"};
+const TIME_SLOTS = ["06:00-08:00","08:00-10:00","10:00-12:00","12:00-14:00","14:00-16:00","16:00-18:00","18:00-20:00","20:00-22:00"];
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
-    if (jwtToken) {
-        checkAuth();
-    } else {
-        showLogin();
-    }
+    if (jwtToken) checkAuth(); else showLogin();
 });
 
 function showLogin() {
@@ -29,183 +32,223 @@ function showApp() {
     initWebSocket();
     loadUsers();
     loadProxies();
-    loadStatus();
+    loadSniperStatus();
     updateClock();
     setInterval(updateClock, 1000);
-    setInterval(loadStatus, 30000);
+    setInterval(loadSniperStatus, 10000);
+    startCountdown();
+    ntpSync();
 
-    ["new-username", "new-password", "new-proxy"].forEach(id => {
-        document.getElementById(id).addEventListener("keydown", e => {
-            if (e.key === "Enter") addUser();
-        });
-    });
-    ["login-user", "login-pass"].forEach(id => {
-        document.getElementById(id).addEventListener("keydown", e => {
-            if (e.key === "Enter") doLogin();
-        });
+    ["new-username","new-password","new-proxy"].forEach(id => {
+        document.getElementById(id).addEventListener("keydown", e => { if(e.key==="Enter")addUser(); });
     });
 }
 
 async function checkAuth() {
     try {
-        const res = await fetch(`${API}/api/auth/status`, {
-            headers: { "Authorization": `Bearer ${jwtToken}` }
-        });
+        const res = await fetch(`${API}/api/auth/status`, {headers:{Authorization:`Bearer ${jwtToken}`}});
         const data = await res.json();
-        if (data.authenticated) {
-            showApp();
-        } else {
-            localStorage.removeItem("seap_jwt");
-            jwtToken = null;
-            showLogin();
-        }
-    } catch {
-        showLogin();
-    }
+        if (data.authenticated) showApp(); else { localStorage.removeItem("seap_jwt"); jwtToken=null; showLogin(); }
+    } catch { showLogin(); }
 }
 
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
 async function doLogin() {
-    const username = document.getElementById("login-user").value.trim();
-    const password = document.getElementById("login-pass").value.trim();
-    const errorEl = document.getElementById("login-error");
-
-    if (!username || !password) {
-        errorEl.textContent = "Preencha usuário e senha";
-        errorEl.classList.remove("hidden");
-        return;
-    }
-
+    const u = document.getElementById("login-user").value.trim();
+    const p = document.getElementById("login-pass").value.trim();
+    const err = document.getElementById("login-error");
+    if (!u||!p) { err.textContent="Preencha tudo"; err.classList.remove("hidden"); return; }
     try {
-        const res = await fetch(`${API}/api/auth/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password }),
-        });
+        const res = await fetch(`${API}/api/auth/login`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Erro no login");
-
-        jwtToken = data.token;
-        localStorage.setItem("seap_jwt", jwtToken);
-        errorEl.classList.add("hidden");
-        showApp();
-    } catch (err) {
-        errorEl.textContent = err.message;
-        errorEl.classList.remove("hidden");
-    }
+        if (!res.ok) throw new Error(data.error);
+        jwtToken = data.token; localStorage.setItem("seap_jwt",jwtToken); err.classList.add("hidden"); showApp();
+    } catch(e) { err.textContent=e.message; err.classList.remove("hidden"); }
 }
 
-function doLogout() {
-    localStorage.removeItem("seap_jwt");
-    jwtToken = null;
-    showLogin();
-}
+function doLogout() { localStorage.removeItem("seap_jwt"); jwtToken=null; showLogin(); }
 
-// ---------------------------------------------------------------------------
-// API with JWT
-// ---------------------------------------------------------------------------
-async function apiCall(url, method = "GET", body = null) {
-    const opts = {
-        method,
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${jwtToken}`,
-        },
-    };
+async function apiCall(url, method="GET", body=null) {
+    const opts = {method, headers:{"Content-Type":"application/json","Authorization":`Bearer ${jwtToken}`}};
     if (body) opts.body = JSON.stringify(body);
-
     try {
         const res = await fetch(`${API}${url}`, opts);
-        if (res.status === 401) {
-            doLogout();
-            throw new Error("Sessão expirada");
-        }
+        if (res.status===401) { doLogout(); throw new Error("Sessão expirada"); }
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
         return data;
-    } catch (err) {
-        showToast(err.message, "error");
-        throw err;
-    }
+    } catch(e) { showToast(e.message,"error"); throw e; }
 }
 
 // ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
 function initWebSocket() {
-    socket = io({ transports: ["websocket", "polling"] });
-
+    socket = io({transports:["websocket","polling"]});
     socket.on("connect", () => updateConnectionStatus(true));
     socket.on("disconnect", () => updateConnectionStatus(false));
-
-    socket.on("status_update", (data) => handleStatusUpdate(data));
+    socket.on("status_update", d => handleStatusUpdate(d));
 }
 
-function updateConnectionStatus(connected) {
-    const indicator = document.getElementById("ws-indicator");
-    const status = document.getElementById("connection-status");
-
-    if (connected) {
-        indicator.className = "w-3 h-3 rounded-full bg-green-500 pulse-dot";
-        status.textContent = "Conectado";
-        status.className = "text-sm text-green-400";
-    } else {
-        indicator.className = "w-3 h-3 rounded-full bg-red-500";
-        status.textContent = "Desconectado";
-        status.className = "text-sm text-red-400";
-    }
+function updateConnectionStatus(ok) {
+    const ind = document.getElementById("ws-indicator");
+    const st = document.getElementById("connection-status");
+    if (ok) { ind.className="w-3 h-3 rounded-full bg-green-500 pulse-dot"; if(st){st.textContent="Conectado";st.className="text-sm text-green-400";} }
+    else { ind.className="w-3 h-3 rounded-full bg-red-500"; if(st){st.textContent="Off";st.className="text-sm text-red-400";} }
 }
 
 function handleStatusUpdate(data) {
-    const userId = data.user_id;
-    if (userId === "__all__") {
-        if (data.status === "batch_start") {
-            showToast(`Iniciando login de ${data.total} usuários...`, "info");
-        } else if (data.status === "batch_complete") {
-            const ok = data.results?.filter(r => r.success).length || 0;
-            showToast(`Batch: ${ok}/${data.results?.length} sucessos`, ok > 0 ? "success" : "error");
-            loadUsers();
-        } else if (data.status === "batch_wait") {
-            showToast(`Lote ${data.batch}/${data.total_batches} — aguardando ${data.wait_seconds}s...`, "warning");
+    const uid = data.user_id;
+    if (uid === "__all__") {
+        addSniperLog(`[${data.type}] ${JSON.stringify(data).slice(0,120)}`);
+        if (data.type === "fired") {
+            showToast(`🔥 FIRE! Offset: ${data.offset_ms}ms`, "success");
+            setPipelineStep("fire");
+        } else if (data.type === "prewarm_complete") {
+            showToast(`Pre-warm: ${data.ready} prontos`, "info");
+            setPipelineStep("prewarm");
+        } else if (data.type === "armed") {
+            showToast(`🎯 Armado! NTP: ${data.ntp_offset_ms}ms`, "warning");
+            setPipelineStep("arm");
+        } else if (data.type === "hunt_complete") {
+            showToast(`Hunt: ${data.successes} vagas`, "success");
+            setPipelineStep("hunt");
         }
         return;
     }
-
-    userStatuses[userId] = data;
-    const statusCell = document.getElementById(`status-${userId}`);
-    const timeCell = document.getElementById(`time-${userId}`);
-
-    if (statusCell) {
-        const { status } = data;
-        const badges = {
-            connecting: '<span class="px-2 py-1 rounded text-xs bg-yellow-900 text-yellow-300 pulse-dot">Conectando</span>',
-            navigating: '<span class="px-2 py-1 rounded text-xs bg-blue-900 text-blue-300 pulse-dot">Navegando</span>',
-            solving_captcha: '<span class="px-2 py-1 rounded text-xs bg-purple-900 text-purple-300 pulse-dot">Captcha</span>',
-            success: '<span class="px-2 py-1 rounded text-xs bg-green-900 text-green-300">✓ OK</span>',
-            failed: '<span class="px-2 py-1 rounded text-xs bg-red-900 text-red-300">✗ Falha</span>',
-            error: '<span class="px-2 py-1 rounded text-xs bg-red-900 text-red-300">⚠ Erro</span>',
-            cancelled: '<span class="px-2 py-1 rounded text-xs bg-gray-700 text-gray-300">Cancelado</span>',
-        };
-        statusCell.innerHTML = badges[status] || `<span class="px-2 py-1 rounded text-xs bg-gray-700 text-gray-400">${status || "?"}</span>`;
-    }
-
-    if (timeCell && data.elapsed) {
-        timeCell.innerHTML = `<span class="text-gray-300">${data.elapsed}s</span>`;
-    }
+    userStatuses[uid] = data;
 }
 
 // ---------------------------------------------------------------------------
-// Status
+// Sniper
 // ---------------------------------------------------------------------------
-async function loadStatus() {
+async function loadSniperStatus() {
     try {
-        const data = await apiCall("/api/status");
-        document.getElementById("stat-users").textContent = data.total_users || 0;
-        document.getElementById("stat-active").textContent = data.active_users || 0;
-        document.getElementById("stat-proxies").textContent = `${data.proxy_pool?.active || 0}/${data.proxy_pool?.total || 0}`;
-        document.getElementById("stat-sessions").textContent = data.active_sessions || 0;
+        const data = await apiCall("/api/sniper/status");
+        document.getElementById("stat-users").textContent = data.users?.total||0;
+        document.getElementById("stat-active").textContent = data.users?.active||0;
+        document.getElementById("stat-proxies").textContent = `${data.proxies?.active||0}/${data.proxies?.total||0}`;
+        document.getElementById("stat-browsers").textContent = data.users_ready||0;
+        document.getElementById("stat-sniper").textContent = (data.status||"IDLE").toUpperCase();
+
+        const ntpMs = data.ntp?.offset_ms||0;
+        document.getElementById("ntp-badge").textContent = `NTP: ${ntpMs>0?'+':''}${ntpMs}ms`;
+        document.getElementById("ntp-offset").textContent = `${ntpMs>0?'+':''}${ntpMs}ms`;
+        document.getElementById("ntp-offset").className = `text-2xl font-mono ${Math.abs(ntpMs)<10?'text-green-400':Math.abs(ntpMs)<50?'text-yellow-400':'text-red-400'}`;
+
+        document.getElementById("sniper-status-text").textContent = (data.status||"IDLE").toUpperCase();
+        document.getElementById("sniper-status-text").className = `text-2xl font-bold ${
+            data.status==="idle"?"text-gray-400":data.status==="armed"?"text-yellow-400":
+            data.status==="firing"?"text-red-400":data.status==="hunting"?"text-purple-400":
+            data.status==="complete"?"text-green-400":"text-gray-400"
+        }`;
+    } catch {}
+}
+
+async function ntpSync() {
+    try {
+        const data = await apiCall("/api/sniper/ntp-sync","POST");
+        showToast(`NTP sync: ${data.offset_ms}ms (${data.servers_used} servers)`, "success");
+        loadSniperStatus();
+    } catch {}
+}
+
+async function sniperPrewarm() {
+    showToast("Pre-warming browsers...","info");
+    try {
+        const data = await apiCall("/api/sniper/prewarm","POST");
+        showToast(`${data.ready} browsers prontos, ${data.failed} falharam`, data.failed>0?"warning":"success");
+        setPipelineStep("prewarm");
+    } catch {}
+}
+
+async function sniperArm() {
+    showToast("Armando sniper...","warning");
+    try {
+        const data = await apiCall("/api/sniper/arm","POST");
+        showToast(`Armado! Offset: ${data.offset_ms}ms`,"success");
+        setPipelineStep("arm");
+    } catch {}
+}
+
+async function sniperFire() {
+    showToast("🔥 DISPARANDO!","error");
+    try {
+        const data = await apiCall("/api/sniper/fire","POST");
+        showToast(`${data.successes}/${data.total} logins OK`, data.successes===data.total?"success":"warning");
+        setPipelineStep("fire");
+    } catch {}
+}
+
+async function sniperExecute() {
+    if (!confirm("⚠️ EXECUTAR PIPELINE COMPLETO?\n\nPre-warm → NTP Sync → Arm → Fire → Hunt\n\nOs browsers vão abrir e aguardar até 06h BRT para disparar.")) return;
+    showToast("🚀 Pipeline completo iniciado!","warning");
+    addSniperLog("🚀 Pipeline completo iniciado");
+    try {
+        const data = await apiCall("/api/sniper/execute","POST");
+        showToast(`Pipeline: ${data.successes} sucessos em ${data.total_attempts} tentativas`, "success");
+        addSniperLog(`✅ Pipeline completo: ${JSON.stringify(data).slice(0,200)}`);
+    } catch {}
+}
+
+async function sniperCancel() {
+    try {
+        await apiCall("/api/sniper/cancel","POST");
+        showToast("Sniper cancelado","info");
+        resetPipeline();
+    } catch {}
+}
+
+function setPipelineStep(step) {
+    const steps = ["prewarm","ntp","arm","fire","hunt"];
+    const idx = steps.indexOf(step);
+    steps.forEach((s,i) => {
+        const el = document.getElementById(`step-${s}`);
+        if (i < idx) el.className = "px-3 py-1 rounded bg-green-900 text-green-300";
+        else if (i === idx) el.className = "px-3 py-1 rounded bg-yellow-900 text-yellow-300 pulse-dot";
+        else el.className = "px-3 py-1 rounded bg-gray-700 text-gray-400";
+    });
+}
+
+function resetPipeline() {
+    ["prewarm","ntp","arm","fire","hunt"].forEach(s => {
+        document.getElementById(`step-${s}`).className = "px-3 py-1 rounded bg-gray-700 text-gray-400";
+    });
+}
+
+function addSniperLog(msg) {
+    sniperLog.unshift(`[${new Date().toLocaleTimeString("pt-BR")}] ${msg}`);
+    if (sniperLog.length > 100) sniperLog.pop();
+    const el = document.getElementById("sniper-log");
+    if (el) el.innerHTML = sniperLog.map(l => `<div class="text-gray-400">${escapeHtml(l)}</div>`).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Countdown
+// ---------------------------------------------------------------------------
+function startCountdown() {
+    if (countdownInterval) clearInterval(countdownInterval);
+    countdownInterval = setInterval(updateCountdown, 100);
+}
+
+async function updateCountdown() {
+    try {
+        const data = await apiCall("/api/sniper/next-target");
+        const s = data.seconds_until;
+        if (s <= 0) {
+            document.getElementById("countdown").textContent = "AGORA!";
+            document.getElementById("countdown-big").textContent = "🔥 AGORA!";
+            return;
+        }
+        const d = Math.floor(s/86400);
+        const h = Math.floor((s%86400)/3600);
+        const m = Math.floor((s%3600)/60);
+        const sec = Math.floor(s%60);
+        const str = d>0 ? `${d}d ${h}h ${m}m ${sec}s` : `${h}h ${m}m ${sec}s`;
+        document.getElementById("countdown").textContent = str;
+        document.getElementById("countdown-big").textContent = str;
     } catch {}
 }
 
@@ -216,420 +259,191 @@ async function loadUsers() {
     try {
         const data = await apiCall("/api/users");
         renderUsers(data.users);
+        updateScheduleUserSelect(data.users);
     } catch {}
 }
 
 function renderUsers(users) {
     const tbody = document.getElementById("users-table");
-
-    if (!users.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">Nenhum usuário cadastrado.</td></tr>';
-        return;
-    }
-
+    if (!users||!users.length) { tbody.innerHTML='<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">Nenhum usuário</td></tr>'; return; }
     tbody.innerHTML = users.map(u => {
-        const status = userStatuses[u.id] || {};
-        const active = u.is_active !== 0 && u.is_active !== false;
-        const autoLogin = u.auto_login === 1 || u.auto_login === true;
-        const human = u.human_mode === 1 || u.human_mode === true;
-
-        const proxyDisplay = u.proxy
-            ? `<span class="text-green-400 text-xs">${maskProxy(u.proxy)}</span>`
-            : '<span class="text-gray-600 text-xs">—</span>';
-
-        let statusBadge;
-        if (status.status === "success") {
-            statusBadge = '<span class="px-2 py-1 rounded text-xs bg-green-900 text-green-300">✓ OK</span>';
-        } else if (status.status === "failed" || status.status === "error") {
-            statusBadge = '<span class="px-2 py-1 rounded text-xs bg-red-900 text-red-300">✗ Falha</span>';
-        } else if (status.status) {
-            statusBadge = `<span class="px-2 py-1 rounded text-xs bg-gray-700 text-gray-400">${status.status}</span>`;
-        } else {
-            statusBadge = '<span class="px-2 py-1 rounded text-xs bg-gray-700 text-gray-500">Inativo</span>';
-        }
-
-        const time = status.elapsed ? `${status.elapsed}s` : "—";
-        const rowOpacity = active ? "" : "opacity-50";
-
-        return `
-        <tr id="row-${u.id}" class="hover:bg-gray-750 transition ${rowOpacity}">
-            <td class="px-3 py-3">
-                <div class="text-sm text-white font-medium">${escapeHtml(u.username)}</div>
-                <div class="text-xs text-gray-500">${u.id.slice(0, 8)}...</div>
-            </td>
-            <td class="px-3 py-3 text-center">
-                <div class="toggle-track ${active ? 'active' : 'inactive'}" onclick="toggleActive('${u.id}')">
-                    <div class="toggle-thumb"></div>
-                </div>
-            </td>
-            <td class="px-3 py-3 text-center">
-                <div class="toggle-track ${autoLogin ? 'active' : 'inactive'}" onclick="toggleAutoLogin('${u.id}')" title="Login automático">
-                    <div class="toggle-thumb"></div>
-                </div>
-            </td>
-            <td class="px-3 py-3">${proxyDisplay}</td>
-            <td class="px-3 py-3 text-center" id="human-${u.id}">
-                <span class="text-xs ${human ? 'text-green-400' : 'text-gray-500'}">${human ? 'ON' : 'OFF'}</span>
-            </td>
-            <td class="px-3 py-3" id="status-${u.id}">${statusBadge}</td>
-            <td class="px-3 py-3" id="time-${u.id}"><span class="text-gray-400 text-sm">${time}</span></td>
-            <td class="px-3 py-3 text-center">
-                <div class="flex gap-1 justify-center">
-                    <button onclick="loginUser('${u.id}')" class="bg-green-700 hover:bg-green-600 text-white rounded px-2 py-1 text-xs transition" title="Login" ${!active ? 'disabled' : ''}>🔑</button>
-                    <button onclick="toggleHuman('${u.id}')" class="bg-purple-700 hover:bg-purple-600 text-white rounded px-2 py-1 text-xs transition" title="Modo Humano">🧑</button>
-                    <button onclick="assignProxy('${u.id}')" class="bg-blue-700 hover:bg-blue-600 text-white rounded px-2 py-1 text-xs transition" title="Atribuir Proxy">🌐</button>
-                    <button onclick="deleteUser('${u.id}', '${escapeHtml(u.username)}')" class="bg-red-800 hover:bg-red-700 text-white rounded px-2 py-1 text-xs transition" title="Remover">🗑️</button>
-                </div>
-            </td>
+        const active = u.is_active!==0;
+        const auto = u.auto_login===1;
+        const proxy = u.proxy ? `<span class="text-green-400 text-xs">${maskProxy(u.proxy)}</span>` : '<span class="text-gray-600 text-xs">—</span>';
+        return `<tr class="hover:bg-gray-750 ${active?'':'opacity-50'}">
+            <td class="px-3 py-3"><div class="text-sm text-white font-medium">${escapeHtml(u.username)}</div></td>
+            <td class="px-3 py-3 text-center"><div class="toggle-track ${active?'active':'inactive'}" onclick="toggleActive('${u.id}')"><div class="toggle-thumb"></div></div></td>
+            <td class="px-3 py-3 text-center"><div class="toggle-track ${auto?'active':'inactive'}" onclick="toggleAutoLogin('${u.id}')"><div class="toggle-thumb"></div></div></td>
+            <td class="px-3 py-3">${proxy}</td>
+            <td class="px-3 py-3 text-center"><div class="flex gap-1 justify-center">
+                <button onclick="assignProxy('${u.id}')" class="bg-blue-700 hover:bg-blue-600 text-white rounded px-2 py-1 text-xs">🌐</button>
+                <button onclick="deleteUser('${u.id}','${escapeHtml(u.username)}')" class="bg-red-800 hover:bg-red-700 text-white rounded px-2 py-1 text-xs">🗑️</button>
+            </div></td>
         </tr>`;
     }).join("");
 }
 
 async function addUser() {
-    const username = document.getElementById("new-username").value.trim();
-    const password = document.getElementById("new-password").value.trim();
-    const proxy = document.getElementById("new-proxy").value.trim();
+    const u=document.getElementById("new-username").value.trim();
+    const p=document.getElementById("new-password").value.trim();
+    const px=document.getElementById("new-proxy").value.trim();
+    if(!u||!p){showToast("Preencha usuário e senha","error");return;}
+    try{await apiCall("/api/users","POST",{username:u,password:p,proxy:px||null});showToast(`"${u}" cadastrado!`,"success");document.getElementById("new-username").value="";document.getElementById("new-password").value="";document.getElementById("new-proxy").value="";loadUsers();}catch{}
+}
+async function deleteUser(id,u){if(!confirm(`Remover "${u}"?`))return;try{await apiCall(`/api/users/${id}`,"DELETE");loadUsers();}catch{}}
+async function toggleActive(id){try{await apiCall(`/api/users/${id}/toggle-active`,"POST");loadUsers();}catch{}}
+async function toggleAutoLogin(id){try{await apiCall(`/api/users/${id}/toggle-auto-login`,"POST");loadUsers();}catch{}}
+async function assignProxy(id){try{const d=await apiCall(`/api/proxies/assign/${id}`,"POST");showToast(d.message,"success");loadUsers();}catch{}}
 
-    if (!username || !password) {
-        showToast("Preencha usuário e senha", "error");
-        return;
+// ---------------------------------------------------------------------------
+// Schedule / Calendar
+// ---------------------------------------------------------------------------
+function updateScheduleUserSelect(users) {
+    const sel = document.getElementById("schedule-user-select");
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Selecione um usuário</option>' + users.map(u => `<option value="${u.id}">${escapeHtml(u.username)}</option>`).join("");
+    if (current) sel.value = current;
+}
+
+async function loadScheduleForUser() {
+    const userId = document.getElementById("schedule-user-select").value;
+    if (!userId) { document.getElementById("schedule-grid").innerHTML = ""; currentScheduleUserId = null; return; }
+    currentScheduleUserId = userId;
+
+    try {
+        const data = await apiCall(`/api/schedule/${userId}`);
+        renderScheduleGrid(data.schedule);
+    } catch {}
+}
+
+function renderScheduleGrid(schedule) {
+    const grid = document.getElementById("schedule-grid");
+    const days = schedule.days || DAYS.map(d => ({day:d, enabled:false, time_slots:[]}));
+
+    grid.innerHTML = days.map(dayData => {
+        const enabled = dayData.enabled;
+        return `<div class="bg-gray-700 rounded p-3 ${enabled?'border border-green-600':'border border-gray-600'}">
+            <div class="flex items-center gap-3 mb-2">
+                <input type="checkbox" id="day-cb-${dayData.day}" ${enabled?'checked':''} onchange="toggleDay('${dayData.day}')" class="w-4 h-4 rounded bg-gray-600 border-gray-500">
+                <span class="text-sm font-medium ${enabled?'text-green-400':'text-gray-400'}">${DAY_LABELS[dayData.day]||dayData.day}</span>
+            </div>
+            <div class="flex flex-wrap gap-2 ${enabled?'':'opacity-40'}" id="slots-${dayData.day}">
+                ${TIME_SLOTS.map(slot => {
+                    const checked = (dayData.time_slots||[]).includes(slot);
+                    return `<label class="flex items-center gap-1 text-xs cursor-pointer">
+                        <input type="checkbox" class="slot-cb" data-day="${dayData.day}" data-slot="${slot}" ${checked?'checked':''} ${!enabled?'disabled':''}>
+                        <span class="${checked?'text-green-300':'text-gray-400'}">${slot}</span>
+                    </label>`;
+                }).join("")}
+            </div>
+        </div>`;
+    }).join("");
+}
+
+function toggleDay(day) {
+    const cb = document.getElementById(`day-cb-${day}`);
+    const slotsEl = document.getElementById(`slots-${day}`);
+    const checkboxes = slotsEl.querySelectorAll('.slot-cb');
+    checkboxes.forEach(c => c.disabled = !cb.checked);
+    if (cb.checked) {
+        slotsEl.classList.remove('opacity-40');
+        slotsEl.parentElement.classList.remove('border-gray-600');
+        slotsEl.parentElement.classList.add('border-green-600');
+    } else {
+        slotsEl.classList.add('opacity-40');
+        slotsEl.parentElement.classList.remove('border-green-600');
+        slotsEl.parentElement.classList.add('border-gray-600');
     }
+}
+
+async function saveCurrentSchedule() {
+    if (!currentScheduleUserId) { showToast("Selecione um usuário","error"); return; }
+
+    const days = DAYS.map(day => {
+        const cb = document.getElementById(`day-cb-${day}`);
+        const enabled = cb ? cb.checked : false;
+        const slots = [];
+        document.querySelectorAll(`.slot-cb[data-day="${day}"]`).forEach(c => { if(c.checked) slots.push(c.dataset.slot); });
+        return {day, enabled, time_slots: slots};
+    });
 
     try {
-        await apiCall("/api/users", "POST", { username, password, proxy: proxy || null });
-        showToast(`"${username}" cadastrado!`, "success");
-        document.getElementById("new-username").value = "";
-        document.getElementById("new-password").value = "";
-        document.getElementById("new-proxy").value = "";
-        loadUsers();
+        await apiCall(`/api/schedule/${currentScheduleUserId}`, "PUT", {schedule:{days}});
+        showToast("Agenda salva!","success");
     } catch {}
 }
 
-async function deleteUser(id, username) {
-    if (!confirm(`Remover "${username}"?`)) return;
-    try {
-        await apiCall(`/api/users/${id}`, "DELETE");
-        showToast(`"${username}" removido`, "info");
-        loadUsers();
-    } catch {}
+function selectAllSlots() {
+    DAYS.forEach(day => {
+        const cb = document.getElementById(`day-cb-${day}`);
+        if(cb){cb.checked=true;toggleDay(day);}
+        document.querySelectorAll(`.slot-cb[data-day="${day}"]`).forEach(c=>{c.checked=true;c.disabled=false;});
+    });
 }
 
-async function loginUser(id) {
-    try {
-        showToast("Iniciando login...", "info");
-        const result = await apiCall(`/api/users/${id}/login`, "POST");
-        showToast(result.success ? `Login OK! ${result.elapsed_seconds}s` : `Falha: ${result.message}`, result.success ? "success" : "error");
-        loadUsers();
-    } catch {}
-}
-
-async function loginAllActive() {
-    if (!confirm("Executar login de todos os usuários ATIVOS?")) return;
-    try {
-        showToast("Iniciando login em massa...", "info");
-        const result = await apiCall("/api/login-all", "POST");
-        showToast(`${result.success}/${result.total} logins OK`, result.failed > 0 ? "warning" : "success");
-        loadUsers();
-    } catch {}
-}
-
-async function toggleActive(id) {
-    try {
-        const data = await apiCall(`/api/users/${id}/toggle-active`, "POST");
-        showToast(data.message, "info");
-        loadUsers();
-    } catch {}
-}
-
-async function toggleAutoLogin(id) {
-    try {
-        const data = await apiCall(`/api/users/${id}/toggle-auto-login`, "POST");
-        showToast(data.message, "info");
-        loadUsers();
-    } catch {}
-}
-
-async function toggleHuman(id) {
-    try {
-        const data = await apiCall(`/api/users/${id}/toggle-human`, "POST");
-        showToast(data.message, "info");
-        loadUsers();
-    } catch {}
-}
-
-async function assignProxy(id) {
-    try {
-        const data = await apiCall(`/api/proxies/assign/${id}`, "POST");
-        showToast(data.message, "success");
-        loadUsers();
-    } catch {}
+function clearAllSlots() {
+    DAYS.forEach(day => {
+        const cb = document.getElementById(`day-cb-${day}`);
+        if(cb){cb.checked=false;toggleDay(day);}
+    });
 }
 
 // ---------------------------------------------------------------------------
 // Proxies
 // ---------------------------------------------------------------------------
 async function loadProxies() {
-    try {
-        const data = await apiCall("/api/proxies");
-        renderProxies(data.proxies);
-    } catch {}
+    try { const d=await apiCall("/api/proxies"); renderProxies(d.proxies); } catch {}
 }
 
 function renderProxies(proxies) {
-    const tbody = document.getElementById("proxies-table");
-
-    if (!proxies.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">Nenhum proxy cadastrado. Adicione proxies para login simultâneo.</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = proxies.map(p => {
-        const statusBadge = p.is_active
-            ? '<span class="px-2 py-1 rounded text-xs bg-green-900 text-green-300">✓ Ativo</span>'
-            : '<span class="px-2 py-1 rounded text-xs bg-red-900 text-red-300">✗ Inativo</span>';
-
-        const flag = p.country === 'BR' ? '🇧🇷' : p.country === 'US' ? '🇺🇸' : '🌍';
-
-        return `
-        <tr class="hover:bg-gray-750 transition">
-            <td class="px-3 py-3 text-sm text-white">${escapeHtml(p.label || '—')}</td>
-            <td class="px-3 py-3 text-xs text-gray-400 font-mono">${maskProxy(p.url)}</td>
-            <td class="px-3 py-3 text-center">${flag} ${p.country}</td>
-            <td class="px-3 py-3 text-center">${statusBadge}</td>
-            <td class="px-3 py-3 text-center text-sm text-gray-300">${p.assigned_count || 0}</td>
-            <td class="px-3 py-3 text-center">
-                <div class="flex gap-1 justify-center">
-                    <button onclick="testProxy('${p.id}')" class="bg-yellow-700 hover:bg-yellow-600 text-white rounded px-2 py-1 text-xs transition">🧪</button>
-                    <button onclick="deleteProxy('${p.id}')" class="bg-red-800 hover:bg-red-700 text-white rounded px-2 py-1 text-xs transition">🗑️</button>
-                </div>
-            </td>
-        </tr>`;
+    const t=document.getElementById("proxies-table");
+    if(!proxies||!proxies.length){t.innerHTML='<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">Nenhum proxy</td></tr>';return;}
+    t.innerHTML=proxies.map(p=>{
+        const badge=p.is_active?'<span class="px-2 py-1 rounded text-xs bg-green-900 text-green-300">✓</span>':'<span class="px-2 py-1 rounded text-xs bg-red-900 text-red-300">✗</span>';
+        const flag=p.country==='BR'?'🇧🇷':'🌍';
+        return `<tr class="hover:bg-gray-750"><td class="px-3 py-3 text-sm text-white">${escapeHtml(p.label||'—')}</td><td class="px-3 py-3 text-xs text-gray-400 font-mono">${maskProxy(p.url)}</td><td class="px-3 py-3 text-center">${flag}</td><td class="px-3 py-3 text-center">${badge}</td><td class="px-3 py-3 text-center"><div class="flex gap-1 justify-center"><button onclick="testProxy('${p.id}')" class="bg-yellow-700 hover:bg-yellow-600 text-white rounded px-2 py-1 text-xs">🧪</button><button onclick="deleteProxy('${p.id}')" class="bg-red-800 hover:bg-red-700 text-white rounded px-2 py-1 text-xs">🗑️</button></div></td></tr>`;
     }).join("");
 }
 
-async function addProxy() {
-    const url = document.getElementById("new-proxy-url").value.trim();
-    const label = document.getElementById("new-proxy-label").value.trim();
-    const country = document.getElementById("new-proxy-country").value;
-
-    if (!url) {
-        showToast("URL do proxy obrigatória", "error");
-        return;
-    }
-
-    try {
-        await apiCall("/api/proxies", "POST", { url, label, country });
-        showToast("Proxy adicionado!", "success");
-        document.getElementById("new-proxy-url").value = "";
-        document.getElementById("new-proxy-label").value = "";
-        loadProxies();
-    } catch {}
-}
-
-async function addProxiesBatch() {
-    const text = document.getElementById("batch-proxies").value.trim();
-    if (!text) {
-        showToast("Cole os proxies no campo", "error");
-        return;
-    }
-
-    try {
-        const data = await apiCall("/api/proxies/batch", "POST", { proxies: text });
-        showToast(data.message, "success");
-        document.getElementById("batch-proxies").value = "";
-        loadProxies();
-    } catch {}
-}
-
-async function testProxy(id) {
-    showToast("Testando proxy...", "info");
-    try {
-        const result = await apiCall(`/api/proxies/${id}/test`, "POST");
-        if (result.success) {
-            showToast(`✓ IP: ${result.ip} (${result.latency_ms}ms)`, "success");
-        } else {
-            showToast(`✗ Falha: ${result.error}`, "error");
-        }
-        loadProxies();
-    } catch {}
-}
-
-async function testAllProxies() {
-    showToast("Testando todos os proxies...", "info");
-    try {
-        const data = await apiCall("/api/proxies/test-all", "POST");
-        showToast(`${data.working}/${data.total} proxies OK`, data.failed > 0 ? "warning" : "success");
-        loadProxies();
-    } catch {}
-}
-
-async function deleteProxy(id) {
-    if (!confirm("Remover este proxy?")) return;
-    try {
-        await apiCall(`/api/proxies/${id}`, "DELETE");
-        showToast("Proxy removido", "info");
-        loadProxies();
-    } catch {}
-}
-
-// ---------------------------------------------------------------------------
-// Execution Plan
-// ---------------------------------------------------------------------------
-async function showExecutionPlan() {
-    try {
-        const plan = await apiCall("/api/execution-plan");
-        renderPlan(plan);
-        switchTab("plan");
-    } catch {}
-}
-
-function renderPlan(plan) {
-    const summary = document.getElementById("plan-summary");
-    summary.innerHTML = `
-        <div class="bg-gray-700 rounded p-3 text-center">
-            <div class="text-2xl font-bold text-white">${plan.total_users}</div>
-            <div class="text-xs text-gray-400">Usuários Ativos</div>
-        </div>
-        <div class="bg-gray-700 rounded p-3 text-center">
-            <div class="text-2xl font-bold text-blue-400">${plan.total_proxies}</div>
-            <div class="text-xs text-gray-400">Proxies Disponíveis</div>
-        </div>
-        <div class="bg-gray-700 rounded p-3 text-center">
-            <div class="text-2xl font-bold text-yellow-400">${plan.total_batches}</div>
-            <div class="text-xs text-gray-400">Lotes</div>
-        </div>
-        <div class="bg-gray-700 rounded p-3 text-center">
-            <div class="text-2xl font-bold text-green-400">~${Math.ceil(plan.estimated_total_seconds / 60)}min</div>
-            <div class="text-xs text-gray-400">Tempo Estimado</div>
-        </div>
-    `;
-
-    const batchesEl = document.getElementById("plan-batches");
-    if (!plan.batches || !plan.batches.length) {
-        batchesEl.innerHTML = '<div class="text-center text-gray-500 py-8">Nenhum usuário ativo para executar.</div>';
-        return;
-    }
-
-    batchesEl.innerHTML = plan.batches.map((b, i) => `
-        <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 fade-in">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-semibold text-white">🔄 Lote ${b.batch_number} de ${plan.total_batches}</h3>
-                <span class="text-xs text-gray-400">${b.parallel_count} login(s) simultâneo(s) · ~${b.estimated_duration}s</span>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                ${b.users.map(u => `
-                    <div class="bg-gray-700 rounded px-3 py-2 flex justify-between items-center">
-                        <span class="text-sm text-white">${escapeHtml(u.username)}</span>
-                        <span class="text-xs ${u.proxy.includes('socks5') || u.proxy.includes('http') ? 'text-green-400' : 'text-red-400'}">${u.proxy.includes('socks5') || u.proxy.includes('http') ? maskProxy(u.proxy) : 'SEM PROXY'}</span>
-                    </div>
-                `).join("")}
-            </div>
-            ${i < plan.batches.length - 1 ? '<div class="text-center text-yellow-400 text-xs mt-2">⏳ Aguarda 45s antes do próximo lote</div>' : ''}
-        </div>
-    `).join("");
-}
+async function addProxy(){const u=document.getElementById("new-proxy-url").value.trim();const l=document.getElementById("new-proxy-label").value.trim();const c=document.getElementById("new-proxy-country").value;if(!u){showToast("URL obrigatória","error");return;}try{await apiCall("/api/proxies","POST",{url:u,label:l,country:c});showToast("Proxy adicionado","success");document.getElementById("new-proxy-url").value="";document.getElementById("new-proxy-label").value="";loadProxies();}catch{}}
+async function addProxiesBatch(){const t=document.getElementById("batch-proxies").value.trim();if(!t)return;try{const d=await apiCall("/api/proxies/batch","POST",{proxies:t});showToast(d.message,"success");document.getElementById("batch-proxies").value="";loadProxies();}catch{}}
+async function testProxy(id){showToast("Testando...","info");try{const r=await apiCall(`/api/proxies/${id}/test`,"POST");showToast(r.success?`✓ ${r.ip} (${r.latency_ms}ms)`:`✗ ${r.error}`,r.success?"success":"error");loadProxies();}catch{}}
+async function testAllProxies(){showToast("Testando todos...","info");try{const d=await apiCall("/api/proxies/test-all","POST");showToast(`${d.working}/${d.total} OK`,d.failed>0?"warning":"success");loadProxies();}catch{}}
+async function deleteProxy(id){if(!confirm("Remover?"))return;try{await apiCall(`/api/proxies/${id}`,"DELETE");loadProxies();}catch{}}
 
 // ---------------------------------------------------------------------------
 // Logs
 // ---------------------------------------------------------------------------
 async function loadLogs() {
     try {
-        const res = await fetch(`${API}/logs`, {
-            headers: { "Authorization": `Bearer ${jwtToken}` }
-        });
+        const res = await fetch(`${API}/logs`, {headers:{Authorization:`Bearer ${jwtToken}`}});
         const data = await res.json();
-        renderLogs(data.logs || []);
+        const c=document.getElementById("logs-container");
+        const logs=data.logs||[];
+        if(!logs.length){c.innerHTML='<div class="text-gray-500">Nenhum log</div>';return;}
+        c.innerHTML=logs.map(l=>{
+            const col=l.status==="success"?"text-green-400":(l.status==="error"||l.status==="failed")?"text-red-400":"text-gray-400";
+            return `<div class="${col}"><span class="text-gray-600">${new Date(l.timestamp).toLocaleString("pt-BR")}</span> <span class="text-blue-400">[${l.action}]</span> ${escapeHtml(l.message)}</div>`;
+        }).join("");
     } catch {}
-}
-
-function renderLogs(logs) {
-    const container = document.getElementById("logs-container");
-    if (!logs.length) {
-        container.innerHTML = '<div class="text-gray-500">Nenhum log.</div>';
-        return;
-    }
-
-    container.innerHTML = logs.map(l => {
-        const color = l.status === "success" ? "text-green-400"
-            : (l.status === "error" || l.status === "failed") ? "text-red-400"
-            : l.status === "started" ? "text-yellow-400"
-            : "text-gray-400";
-        const time = new Date(l.timestamp).toLocaleString("pt-BR");
-        return `<div class="${color}">
-            <span class="text-gray-600">${time}</span>
-            <span class="text-blue-400">[${l.action}]</span>
-            <span class="text-gray-300">${l.message}</span>
-        </div>`;
-    }).join("");
 }
 
 // ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
 function switchTab(tab) {
-    document.querySelectorAll(".tab-content").forEach(el => el.classList.add("hidden"));
-    document.querySelectorAll(".tab-btn").forEach(el => {
-        el.classList.remove("text-blue-400", "border-blue-400");
-        el.classList.add("text-gray-400", "border-transparent");
-    });
-
+    document.querySelectorAll(".tab-content").forEach(el=>el.classList.add("hidden"));
+    document.querySelectorAll(".tab-btn").forEach(el=>{el.classList.remove("text-red-400","border-red-400","text-blue-400","border-blue-400");el.classList.add("text-gray-400","border-transparent");});
     document.getElementById(`tab-${tab}`).classList.remove("hidden");
-    const btn = document.querySelector(`[data-tab="${tab}"]`);
-    if (btn) {
-        btn.classList.remove("text-gray-400", "border-transparent");
-        btn.classList.add("text-blue-400", "border-blue-400");
-    }
-
-    if (tab === "logs") loadLogs();
-    if (tab === "users") loadUsers();
-    if (tab === "proxies") loadProxies();
+    const btn=document.querySelector(`[data-tab="${tab}"]`);
+    if(btn){btn.classList.remove("text-gray-400","border-transparent");btn.classList.add(tab==="sniper"?"text-red-400":"text-blue-400");btn.classList.add(tab==="sniper"?"border-red-400":"border-blue-400");}
+    if(tab==="logs")loadLogs();if(tab==="users")loadUsers();if(tab==="proxies")loadProxies();if(tab==="schedule")loadUsers();
 }
 
 // ---------------------------------------------------------------------------
 // Utils
 // ---------------------------------------------------------------------------
-function showToast(message, type = "info") {
-    const container = document.getElementById("toast-container");
-    const toast = document.createElement("div");
-    const colors = {
-        info: "bg-blue-800 border-blue-600",
-        success: "bg-green-800 border-green-600",
-        error: "bg-red-800 border-red-600",
-        warning: "bg-yellow-800 border-yellow-600",
-    };
-    toast.className = `${colors[type] || colors.info} border rounded px-4 py-2 text-sm text-white shadow-lg fade-in max-w-sm`;
-    toast.textContent = message;
-    container.appendChild(toast);
-    setTimeout(() => {
-        toast.style.opacity = "0";
-        toast.style.transition = "opacity 0.3s";
-        setTimeout(() => toast.remove(), 300);
-    }, 4000);
-}
-
-function escapeHtml(str) {
-    if (!str) return "";
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
-}
-
-function maskProxy(proxy) {
-    try {
-        const url = new URL(proxy);
-        const user = url.username ? `${url.username}@` : "";
-        return `${user}${url.hostname}:${url.port}`;
-    } catch {
-        return proxy.length > 25 ? proxy.slice(0, 25) + "..." : proxy;
-    }
-}
-
-function updateClock() {
-    const el = document.getElementById("clock");
-    if (el) {
-        el.textContent = new Date().toLocaleString("pt-BR", {
-            timeZone: "America/Sao_Paule",
-            hour: "2-digit", minute: "2-digit", second: "2-digit",
-        });
-    }
-}
+function showToast(msg,type="info"){const c=document.getElementById("toast-container");const t=document.createElement("div");const cols={info:"bg-blue-800 border-blue-600",success:"bg-green-800 border-green-600",error:"bg-red-800 border-red-600",warning:"bg-yellow-800 border-yellow-600"};t.className=`${cols[type]||cols.info} border rounded px-4 py-2 text-sm text-white shadow-lg fade-in max-w-sm`;t.textContent=msg;c.appendChild(t);setTimeout(()=>{t.style.opacity="0";t.style.transition="opacity 0.3s";setTimeout(()=>t.remove(),300);},4000);}
+function escapeHtml(s){if(!s)return"";const d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+function maskProxy(p){try{const u=new URL(p);return `${u.username?u.username+'@':''}${u.hostname}:${u.port}`;}catch{return p.length>25?p.slice(0,25)+'...':p;}}
+function updateClock(){const el=document.getElementById("clock");if(el)el.textContent=new Date().toLocaleTimeString("pt-BR",{timeZone:"America/Sao_Paulo"});}

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SEAP Bot Dashboard</title>
+    <title>SEAP Bot — Sniper de Vagas</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
@@ -21,18 +21,18 @@
     <style>
         body { background: #0f0f1a; }
         .pulse-dot { animation: pulse-dot 1.5s infinite; }
-        @keyframes pulse-dot {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.3; }
-        }
+        @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
         .fade-in { animation: fadeIn 0.3s ease-in; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .toggle-track { width: 36px; height: 20px; border-radius: 10px; cursor: pointer; transition: background 0.2s; position: relative; }
-        .toggle-track.active { background: #22c55e; }
-        .toggle-track.inactive { background: #4b5563; }
-        .toggle-thumb { width: 16px; height: 16px; border-radius: 50%; background: white; position: absolute; top: 2px; transition: left 0.2s; }
-        .toggle-track.active .toggle-thumb { left: 18px; }
-        .toggle-track.inactive .toggle-thumb { left: 2px; }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+        .toggle-track { width:36px;height:20px;border-radius:10px;cursor:pointer;transition:background 0.2s;position:relative }
+        .toggle-track.active { background:#22c55e }
+        .toggle-track.inactive { background:#4b5563 }
+        .toggle-thumb { width:16px;height:16px;border-radius:50%;background:white;position:absolute;top:2px;transition:left 0.2s }
+        .toggle-track.active .toggle-thumb { left:18px }
+        .toggle-track.inactive .toggle-thumb { left:2px }
+        .fire-btn { animation: fireGlow 2s infinite; }
+        @keyframes fireGlow { 0%,100%{box-shadow:0 0 5px #ef4444} 50%{box-shadow:0 0 25px #ef4444,0 0 50px #f97316} }
+        .countdown { font-variant-numeric: tabular-nums; }
     </style>
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -42,22 +42,20 @@
 <div id="login-screen" class="min-h-screen flex items-center justify-center">
     <div class="bg-gray-800 rounded-lg p-8 border border-gray-700 w-full max-w-sm">
         <div class="text-center mb-6">
-            <div class="text-3xl mb-2">🔒</div>
-            <h1 class="text-xl font-bold text-white">SEAP Bot Dashboard</h1>
-            <p class="text-sm text-gray-400 mt-1">Faça login como administrador</p>
+            <div class="text-3xl mb-2">🎯</div>
+            <h1 class="text-xl font-bold text-white">SEAP Sniper</h1>
+            <p class="text-sm text-gray-400 mt-1">Dashboard de Controle</p>
         </div>
         <div class="space-y-3">
             <input type="text" id="login-user" placeholder="Usuário" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
             <input type="password" id="login-pass" placeholder="Senha" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none" onkeydown="if(event.key==='Enter')doLogin()">
-            <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition" id="login-btn">
-                Entrar
-            </button>
+            <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">Entrar</button>
             <p id="login-error" class="text-red-400 text-xs text-center hidden"></p>
         </div>
     </div>
 </div>
 
-<!-- Main App (hidden until login) -->
+<!-- Main App -->
 <div id="main-app" class="hidden">
 
 <!-- Header -->
@@ -65,10 +63,14 @@
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
         <div class="flex items-center gap-3">
             <div class="w-3 h-3 rounded-full bg-green-500 pulse-dot" id="ws-indicator"></div>
-            <h1 class="text-xl font-bold text-white">⚙️ SEAP Bot Dashboard</h1>
+            <h1 class="text-xl font-bold text-white">🎯 SEAP Sniper</h1>
+            <span class="text-xs px-2 py-0.5 rounded bg-red-900 text-red-300 font-mono" id="ntp-badge">NTP: --ms</span>
         </div>
         <div class="flex items-center gap-4">
-            <span class="text-sm text-gray-400" id="connection-status">Conectando...</span>
+            <div class="text-right">
+                <div class="text-xs text-gray-500">Próxima Quinta 06h BRT</div>
+                <div class="text-sm font-mono countdown text-yellow-400" id="countdown">--:--:--</div>
+            </div>
             <span class="text-sm text-gray-500" id="clock"></span>
             <button onclick="doLogout()" class="text-xs text-red-400 hover:text-red-300">Sair</button>
         </div>
@@ -77,25 +79,29 @@
 
 <!-- Stats Bar -->
 <div class="bg-gray-800 border-b border-gray-700">
-    <div class="max-w-7xl mx-auto px-4 py-2 flex gap-6 text-xs">
+    <div class="max-w-7xl mx-auto px-4 py-2 flex gap-6 text-xs flex-wrap">
         <div><span class="text-gray-500">Usuários:</span> <span id="stat-users" class="text-white font-medium">0</span></div>
         <div><span class="text-gray-500">Ativos:</span> <span id="stat-active" class="text-green-400 font-medium">0</span></div>
-        <div><span class="text-gray-500">Proxies:</span> <span id="stat-proxies" class="text-blue-400 font-medium">0</span></div>
-        <div><span class="text-gray-500">Sessões:</span> <span id="stat-sessions" class="text-yellow-400 font-medium">0</span></div>
+        <div><span class="text-gray-500">Proxies:</span> <span id="stat-proxies" class="text-blue-400 font-medium">0/0</span></div>
+        <div><span class="text-gray-500">Browsers:</span> <span id="stat-browsers" class="text-purple-400 font-medium">0</span></div>
+        <div><span class="text-gray-500">Status:</span> <span id="stat-sniper" class="text-yellow-400 font-medium">IDLE</span></div>
     </div>
 </div>
 
 <!-- Tabs -->
 <nav class="border-b border-gray-700 bg-dark-800">
     <div class="max-w-7xl mx-auto px-4 flex gap-1 overflow-x-auto">
-        <button onclick="switchTab('users')" class="tab-btn px-4 py-3 text-sm font-medium text-blue-400 border-b-2 border-blue-400 whitespace-nowrap" data-tab="users">
+        <button onclick="switchTab('sniper')" class="tab-btn px-4 py-3 text-sm font-medium text-red-400 border-b-2 border-red-400 whitespace-nowrap" data-tab="sniper">
+            🔥 Sniper
+        </button>
+        <button onclick="switchTab('users')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="users">
             👥 Usuários
         </button>
-        <button onclick="switchTab('proxies')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="proxies">
-            🌐 Pool de Proxies
+        <button onclick="switchTab('schedule')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="schedule">
+            📅 Calendário
         </button>
-        <button onclick="switchTab('plan')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="plan">
-            📊 Plano de Execução
+        <button onclick="switchTab('proxies')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="proxies">
+            🌐 Proxies
         </button>
         <button onclick="switchTab('logs')" class="tab-btn px-4 py-3 text-sm font-medium text-gray-400 border-b-2 border-transparent hover:text-gray-200 whitespace-nowrap" data-tab="logs">
             📜 Logs
@@ -106,9 +112,72 @@
 <!-- Main Content -->
 <main class="max-w-7xl mx-auto px-4 py-6">
 
-    <!-- Users Tab -->
-    <div id="tab-users" class="tab-content">
-        <!-- Add User Form -->
+    <!-- ===== SNIPER TAB ===== -->
+    <div id="tab-sniper" class="tab-content">
+
+        <!-- NTP & Countdown -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700 text-center">
+                <div class="text-xs text-gray-500 mb-1">NTP Offset</div>
+                <div class="text-2xl font-mono text-green-400" id="ntp-offset">--ms</div>
+                <button onclick="ntpSync()" class="mt-2 text-xs text-blue-400 hover:text-blue-300">🔄 Re-sync</button>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700 text-center">
+                <div class="text-xs text-gray-500 mb-1">Contagem Regressiva</div>
+                <div class="text-3xl font-mono countdown text-yellow-400" id="countdown-big">--d --h --m --s</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700 text-center">
+                <div class="text-xs text-gray-500 mb-1">Status do Sniper</div>
+                <div class="text-2xl font-bold" id="sniper-status-text">IDLE</div>
+            </div>
+        </div>
+
+        <!-- Sniper Controls -->
+        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+            <h2 class="text-lg font-semibold mb-4 text-white">🔥 Controle do Sniper</h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <button onclick="sniperPrewarm()" class="bg-yellow-600 hover:bg-yellow-700 text-white rounded px-6 py-3 text-sm font-medium transition">
+                    ⚡ Pre-warm (Preparar Browsers)
+                </button>
+                <button onclick="sniperExecute()" class="bg-red-600 hover:bg-red-700 text-white rounded px-6 py-3 text-sm font-bold transition fire-btn">
+                    🔥 EXECUTAR PIPELINE COMPLETO
+                </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <button onclick="sniperArm()" class="bg-orange-600 hover:bg-orange-700 text-white rounded px-4 py-2 text-sm transition">
+                    🎯 Armar (Aguardar Horário)
+                </button>
+                <button onclick="sniperFire()" class="bg-red-700 hover:bg-red-600 text-white rounded px-4 py-2 text-sm transition">
+                    💥 Disparar Login Agora
+                </button>
+                <button onclick="sniperCancel()" class="bg-gray-600 hover:bg-gray-500 text-white rounded px-4 py-2 text-sm transition">
+                    ✋ Cancelar
+                </button>
+            </div>
+        </div>
+
+        <!-- Pipeline Status -->
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <h2 class="text-lg font-semibold mb-3 text-white">📊 Pipeline</h2>
+            <div class="flex items-center gap-2 text-sm" id="pipeline-steps">
+                <span id="step-prewarm" class="px-3 py-1 rounded bg-gray-700 text-gray-400">1. Pre-warm</span>
+                <span class="text-gray-600">→</span>
+                <span id="step-ntp" class="px-3 py-1 rounded bg-gray-700 text-gray-400">2. NTP Sync</span>
+                <span class="text-gray-600">→</span>
+                <span id="step-arm" class="px-3 py-1 rounded bg-gray-700 text-gray-400">3. Arm</span>
+                <span class="text-gray-600">→</span>
+                <span id="step-fire" class="px-3 py-1 rounded bg-gray-700 text-gray-400">4. Fire</span>
+                <span class="text-gray-600">→</span>
+                <span id="step-hunt" class="px-3 py-1 rounded bg-gray-700 text-gray-400">5. Hunt</span>
+            </div>
+            <div id="sniper-log" class="mt-3 font-mono text-xs space-y-1 max-h-60 overflow-y-auto"></div>
+        </div>
+    </div>
+
+    <!-- ===== USERS TAB ===== -->
+    <div id="tab-users" class="tab-content hidden">
         <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
             <h2 class="text-lg font-semibold mb-3 text-white">➕ Novo Usuário SEAP</h2>
             <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -116,86 +185,86 @@
                 <input type="password" id="new-password" placeholder="Senha SEAP" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
                 <input type="text" id="new-proxy" placeholder="Proxy SOCKS5 (opcional)" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
                 <select id="new-auto-login" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white">
-                    <option value="0">Login Manual</option>
-                    <option value="1">Auto Login</option>
+                    <option value="1">Sniper Automático</option>
+                    <option value="0">Manual</option>
                 </select>
-                <button onclick="addUser()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                    Cadastrar
-                </button>
+                <button onclick="addUser()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">Cadastrar</button>
             </div>
         </div>
-
-        <!-- Bulk Actions -->
-        <div class="flex gap-3 mb-4 flex-wrap">
-            <button onclick="loginAllActive()" class="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                🚀 Login Todos Ativos
-            </button>
-            <button onclick="showExecutionPlan()" class="bg-indigo-600 hover:bg-indigo-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                📊 Ver Plano de Execução
-            </button>
-        </div>
-
-        <!-- Users Table -->
         <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-x-auto">
             <table class="w-full">
                 <thead class="bg-gray-700">
                     <tr>
                         <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Usuário</th>
                         <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Ativo</th>
-                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Auto</th>
+                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Sniper</th>
                         <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Proxy</th>
-                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Humano</th>
-                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
-                        <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">Tempo</th>
                         <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Ações</th>
                     </tr>
                 </thead>
                 <tbody id="users-table" class="divide-y divide-gray-700">
-                    <tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">Carregando...</td></tr>
+                    <tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">Carregando...</td></tr>
                 </tbody>
             </table>
         </div>
     </div>
 
-    <!-- Proxy Pool Tab -->
-    <div id="tab-proxies" class="tab-content hidden">
-        <!-- Add Proxy -->
+    <!-- ===== SCHEDULE TAB ===== -->
+    <div id="tab-schedule" class="tab-content hidden">
         <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
-            <h2 class="text-lg font-semibold mb-3 text-white">🌐 Adicionar Proxy</h2>
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-white">📅 Calendário de Vagas</h2>
+                <div>
+                    <select id="schedule-user-select" onchange="loadScheduleForUser()" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white">
+                        <option value="">Selecione um usuário</option>
+                    </select>
+                </div>
+            </div>
+            <p class="text-xs text-gray-400 mb-4">Selecione os dias e horários que cada usuário pretende concorrer a vagas. O sniper só tentará vaga nos horários marcados.</p>
+
+            <div id="schedule-grid" class="space-y-3">
+                <!-- Filled by JS -->
+            </div>
+
+            <div class="mt-4 flex gap-3">
+                <button onclick="saveCurrentSchedule()" class="bg-green-600 hover:bg-green-700 text-white rounded px-4 py-2 text-sm font-medium transition">
+                    💾 Salvar Agenda
+                </button>
+                <button onclick="selectAllSlots()" class="bg-gray-600 hover:bg-gray-500 text-white rounded px-4 py-2 text-sm transition">
+                    ✅ Selecionar Todos
+                </button>
+                <button onclick="clearAllSlots()" class="bg-gray-600 hover:bg-gray-500 text-white rounded px-4 py-2 text-sm transition">
+                    ❌ Limpar Todos
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== PROXIES TAB ===== -->
+    <div id="tab-proxies" class="tab-content hidden">
+        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
+            <h2 class="text-lg font-semibold mb-3 text-white">🌐 Pool de Proxies</h2>
             <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
                 <input type="text" id="new-proxy-url" placeholder="socks5://user:pass@host:port" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
                 <input type="text" id="new-proxy-label" placeholder="Label (ex: BR-SP-01)" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none">
                 <select id="new-proxy-country" class="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white">
                     <option value="BR">🇧🇷 Brasil</option>
-                    <option value="US">🇺🇸 EUA</option>
                     <option value="OTHER">🌍 Outro</option>
                 </select>
-                <button onclick="addProxy()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                    Adicionar
-                </button>
+                <button onclick="addProxy()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">Adicionar</button>
             </div>
             <details class="text-sm">
                 <summary class="text-gray-400 cursor-pointer hover:text-gray-200">📝 Importar em lote</summary>
                 <div class="mt-3 space-y-2">
-                    <textarea id="batch-proxies" rows="5" placeholder="Um proxy por linha&#10;socks5://user:pass@host:port&#10;host:port:user:pass" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none font-mono"></textarea>
-                    <button onclick="addProxiesBatch()" class="bg-purple-600 hover:bg-purple-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                        Importar Todos
-                    </button>
+                    <textarea id="batch-proxies" rows="4" placeholder="Um proxy por linha" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-400 focus:border-blue-500 focus:outline-none font-mono"></textarea>
+                    <button onclick="addProxiesBatch()" class="bg-purple-600 hover:bg-purple-700 text-white rounded px-4 py-2 text-sm font-medium transition">Importar</button>
                 </div>
             </details>
         </div>
-
-        <!-- Proxy Actions -->
         <div class="flex gap-3 mb-4">
-            <button onclick="testAllProxies()" class="bg-yellow-600 hover:bg-yellow-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                🧪 Testar Todos
-            </button>
-            <button onclick="loadProxies()" class="bg-gray-600 hover:bg-gray-500 text-white rounded px-4 py-2 text-sm font-medium transition">
-                🔄 Atualizar
-            </button>
+            <button onclick="testAllProxies()" class="bg-yellow-600 hover:bg-yellow-700 text-white rounded px-4 py-2 text-sm font-medium transition">🧪 Testar Todos</button>
+            <button onclick="loadProxies()" class="bg-gray-600 hover:bg-gray-500 text-white rounded px-4 py-2 text-sm font-medium transition">🔄</button>
         </div>
-
-        <!-- Proxies Table -->
         <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-x-auto">
             <table class="w-full">
                 <thead class="bg-gray-700">
@@ -204,55 +273,29 @@
                         <th class="text-left px-3 py-3 text-xs font-medium text-gray-300 uppercase">URL</th>
                         <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">País</th>
                         <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Status</th>
-                        <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Atribuições</th>
                         <th class="text-center px-3 py-3 text-xs font-medium text-gray-300 uppercase">Ações</th>
                     </tr>
                 </thead>
-                <tbody id="proxies-table" class="divide-y divide-gray-700">
-                    <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">Carregando proxies...</td></tr>
-                </tbody>
+                <tbody id="proxies-table" class="divide-y divide-gray-700"></tbody>
             </table>
         </div>
     </div>
 
-    <!-- Execution Plan Tab -->
-    <div id="tab-plan" class="tab-content hidden">
-        <div class="bg-gray-800 rounded-lg p-4 mb-6 border border-gray-700">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-lg font-semibold text-white">📊 Plano de Execução de Login</h2>
-                <button onclick="showExecutionPlan()" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 text-sm font-medium transition">
-                    🔄 Recalcular
-                </button>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4" id="plan-summary">
-                <!-- filled by JS -->
-            </div>
-        </div>
-        <div id="plan-batches" class="space-y-4">
-            <!-- filled by JS -->
-        </div>
-    </div>
-
-    <!-- Logs Tab -->
+    <!-- ===== LOGS TAB ===== -->
     <div id="tab-logs" class="tab-content hidden">
         <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
             <div class="p-4 border-b border-gray-700 flex justify-between items-center">
-                <h2 class="text-lg font-semibold text-white">📜 Logs Recentes</h2>
-                <button onclick="loadLogs()" class="text-sm text-blue-400 hover:text-blue-300">🔄 Atualizar</button>
+                <h2 class="text-lg font-semibold text-white">📜 Logs</h2>
+                <button onclick="loadLogs()" class="text-sm text-blue-400 hover:text-blue-300">🔄</button>
             </div>
-            <div id="logs-container" class="max-h-[600px] overflow-y-auto p-4 font-mono text-xs space-y-1">
-                <div class="text-gray-500">Carregando logs...</div>
-            </div>
+            <div id="logs-container" class="max-h-[600px] overflow-y-auto p-4 font-mono text-xs space-y-1"></div>
         </div>
     </div>
 
 </main>
-
 </div><!-- end main-app -->
 
-<!-- Toast container -->
 <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
-
 <script src="/static/app.js"></script>
 </body>
 </html>

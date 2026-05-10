@@ -24,6 +24,8 @@ from dashboard.api.users import users_bp
 from dashboard.api.login import login_bp, set_login_service
 from dashboard.api.vagas import vagas_bp
 from dashboard.api.proxies import proxies_bp
+from dashboard.api.sniper import sniper_bp
+from dashboard.api.schedule import schedule_bp
 from dashboard.services.login_service import LoginService
 from dashboard.services.session_manager import session_manager
 from dashboard.middleware.auth import is_auth_whitelisted, verify_token
@@ -79,6 +81,8 @@ def create_app() -> tuple[Flask, SocketIO]:
     app.register_blueprint(login_bp)
     app.register_blueprint(vagas_bp)
     app.register_blueprint(proxies_bp)
+    app.register_blueprint(sniper_bp)
+    app.register_blueprint(schedule_bp)
 
     # --- Rotas de páginas ---
     @app.route("/")
