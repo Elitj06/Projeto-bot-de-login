@@ -14,7 +14,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, request, jsonify, g
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 
@@ -117,7 +117,6 @@ def create_app() -> tuple[Flask, SocketIO]:
         if not payload:
             return jsonify({"error": "Token inválido ou expirado"}), 401
 
-        from flask import g
         g.admin = payload
         return None
 
