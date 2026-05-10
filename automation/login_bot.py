@@ -159,17 +159,6 @@ class SeapLoginBot:
         # Humano "lê" a página antes de agir
         await self._human.reading_pause()
 
-        # DEBUG: dump HTML da página
-        html = await self._page.content()
-        debug_path = "/root/bot_seap_v2/logs/page_dump.html"
-        with open(debug_path, "w", encoding="utf-8") as f:
-            f.write(html)
-        logger.info(f"HTML dump salvo em {debug_path} ({len(html)} chars)")
-
-        # DEBUG: screenshot da página
-        await self._page.screenshot(path="/root/bot_seap_v2/logs/page_screenshot.png")
-        logger.info("Screenshot salva em logs/page_screenshot.png")
-
     async def _select_login_type(self) -> None:
         """Seleciona 'ID Funcional' no dropdown de tipo de login."""
         for selector in self.LOGIN_TYPE_DROPDOWN_SELECTORS:
