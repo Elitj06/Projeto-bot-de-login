@@ -53,7 +53,7 @@ class CamoufoxConfig:
     Camoufox é mais difícil de detectar que Selenium/Playwright comum
     porque modifica fingerprints no nível C++ do Firefox.
     """
-    headless: bool = False  # False = mostra navegador (mais seguro)
+    headless: bool = True  # True = sem interface gráfica (servidor)
     humanize: bool = True  # Movimentos de mouse humanizados (built-in)
     humanize_max_seconds: float = 1.5  # Tempo máximo de movimento
 

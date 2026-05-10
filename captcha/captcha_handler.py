@@ -55,6 +55,9 @@ class CaptchaHandler:
         "input[placeholder*='código']",
         "input[placeholder*='verificação']",
         "input[placeholder*='Captcha']",
+        "input[placeholder*='caracteres']",
+        "input[placeholder*='Caracteres']",
+        "input[placeholder*='imagem']",
     ]
 
     def __init__(

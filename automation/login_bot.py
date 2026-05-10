@@ -51,6 +51,15 @@ class SeapLoginBot:
     de uma pessoa real.
     """
 
+    # Dropdown para selecionar tipo de login ("ID Funcional")
+    LOGIN_TYPE_DROPDOWN_SELECTORS = [
+        "select[name='tipoLogin']",
+        "select[id='tipoLogin']",
+        "select[name='loginType']",
+        "select[id='loginType']",
+        "select",
+    ]
+
     USERNAME_SELECTORS = [
         "input[name='username']",
         "input[name='login']",
@@ -59,6 +68,8 @@ class SeapLoginBot:
         "input[id='username']",
         "input[id='login']",
         "input[id='user']",
+        "input[id='idFuncional']",
+        "input[type='text']",
         "input[type='email']",
     ]
 
@@ -75,9 +86,12 @@ class SeapLoginBot:
         "input[type='submit']",
         "button.btn-primary",
         "button.login-btn",
+        "button:has-text('Avançar')",
         "button:has-text('Entrar')",
         "button:has-text('Login')",
         "button:has-text('Acessar')",
+        "a.btn:has-text('Avançar')",
+        "input[value='Avançar']",
     ]
 
     def __init__(self, page: Page) -> None:
@@ -113,6 +127,7 @@ class SeapLoginBot:
 
         try:
             await self._navigate_to_login_page()
+            await self._select_login_type()
             await self._fill_credentials(credentials)
             captcha_solution = await self._solve_captcha()
             await self._submit_form()
@@ -143,6 +158,43 @@ class SeapLoginBot:
 
         # Humano "lê" a página antes de agir
         await self._human.reading_pause()
+
+        # DEBUG: dump HTML da página
+        html = await self._page.content()
+        debug_path = "/root/bot_seap_v2/logs/page_dump.html"
+        with open(debug_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        logger.info(f"HTML dump salvo em {debug_path} ({len(html)} chars)")
+
+        # DEBUG: screenshot da página
+        await self._page.screenshot(path="/root/bot_seap_v2/logs/page_screenshot.png")
+        logger.info("Screenshot salva em logs/page_screenshot.png")
+
+    async def _select_login_type(self) -> None:
+        """Seleciona 'ID Funcional' no dropdown de tipo de login."""
+        for selector in self.LOGIN_TYPE_DROPDOWN_SELECTORS:
+            try:
+                element = self._page.locator(selector).first
+                if await element.is_visible(timeout=3000):
+                    logger.info(f"Dropdown de login encontrado: {selector}")
+                    # Tenta selecionar a opção 'ID Funcional'
+                    try:
+                        await element.select_option(label="ID Funcional")
+                        logger.info("Selecionado: ID Funcional")
+                    except Exception:
+                        # Tenta por valor
+                        try:
+                            await element.select_option(value="idFuncional")
+                            logger.info("Selecionado: idFuncional (value)")
+                        except Exception:
+                            # Tenta por texto parcial
+                            await element.select_option(label="ID")
+                            logger.info("Selecionado: ID (partial match)")
+                    await self._human.think()
+                    return
+            except Exception:
+                continue
+        logger.warning("Dropdown de tipo de login não encontrado — pulando seleção")
 
     async def _fill_credentials(
         self, credentials: LoginCredentials
