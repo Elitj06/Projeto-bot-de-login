@@ -51,12 +51,17 @@ class CapSolverClient:
         self._base_url = capsolver_config.base_url
         logger.info("CapSolverClient inicializado")
 
-    async def solve_image_captcha(self, image_path: Path) -> str:
+    async def solve_image_captcha(
+        self,
+        image_path: Path,
+        website_url: str = "",
+    ) -> str:
         """
         Resolve um captcha de imagem.
 
         Args:
             image_path: Caminho do arquivo de imagem (.png/.jpg)
+            website_url: URL do site (melhora acurácia do CapSolver)
 
         Returns:
             Texto resolvido do captcha (ex: "aB7xK9")
@@ -71,7 +76,7 @@ class CapSolverClient:
         image_base64 = self._encode_image_to_base64(image_path)
 
         async with aiohttp.ClientSession() as session:
-            task_id = await self._create_task(session, image_base64)
+            task_id = await self._create_task(session, image_base64, website_url)
             logger.debug(f"Tarefa criada: {task_id}")
 
             solution = await self._poll_for_result(session, task_id)
@@ -92,16 +97,23 @@ class CapSolverClient:
         self,
         session: aiohttp.ClientSession,
         image_base64: str,
+        website_url: str = "",
     ) -> str:
         """Cria uma tarefa de resolução no CapSolver."""
         endpoint = f"{self._base_url}{capsolver_config.create_task_endpoint}"
+
+        task_payload: dict = {
+            "type": "ImageToTextTask",
+            "body": image_base64,
+            "module": "common",
+        }
+
+        if website_url:
+            task_payload["websiteURL"] = website_url
+
         payload = {
             "clientKey": self._api_key,
-            "task": {
-                "type": "ImageToTextTask",
-                "body": image_base64,
-                "module": "common",
-            },
+            "task": task_payload,
         }
 
         response_data = await self._send_request(session, endpoint, payload)
