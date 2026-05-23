@@ -125,6 +125,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN auto_login INTEGER DEFAULT 0")
         except Exception:
             pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN filter_unit TEXT DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN filter_date TEXT DEFAULT ''")
+        except Exception:
+            pass
 
         conn.commit()
         logger.info("Banco de dados inicializado com sucesso")
@@ -186,7 +194,7 @@ def list_users() -> list[dict]:
 
 def update_user(user_id: str, **kwargs) -> Optional[dict]:
     """Atualiza campos do usuário. Retorna o usuário atualizado ou None."""
-    allowed = {"username", "password_encrypted", "proxy", "human_mode", "is_active", "auto_login"}
+    allowed = {"username", "password_encrypted", "proxy", "human_mode", "is_active", "auto_login", "filter_unit", "filter_date"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return get_user(user_id)

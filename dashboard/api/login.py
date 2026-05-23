@@ -115,3 +115,43 @@ def get_status():
         "proxy_pool": {"total": len(proxies), "active": active_proxies},
         "recent_logs": recent_logs,
     })
+
+
+@login_bp.route("/users/<user_id>/full-flow", methods=["POST"])
+def full_flow(user_id: str):
+    """Executa fluxo completo: login + filtro de vagas com segundo CAPTCHA."""
+    user = db.get_user(user_id)
+    if not user:
+        return jsonify({"error": "Usuário não encontrado"}), 404
+
+    data = request.get_json(silent=True) or {}
+    filter_unit = data.get("filter_unit", user.get("filter_unit", ""))
+    filter_date = data.get("filter_date", user.get("filter_date", ""))
+
+    service = _get_service()
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            service.execute_full_flow(
+                user_id,
+                filter_unit=filter_unit,
+                filter_date=filter_date,
+            )
+        )
+    finally:
+        loop.close()
+
+    return jsonify(result)
+
+
+@login_bp.route("/users/<user_id>/close-browser", methods=["POST"])
+def close_browser(user_id: str):
+    """Fecha o browser persistente de um usuário."""
+    service = _get_service()
+    loop = asyncio.new_event_loop()
+    try:
+        closed = loop.run_until_complete(service.close_user_browser(user_id))
+    finally:
+        loop.close()
+
+    return jsonify({"closed": closed})

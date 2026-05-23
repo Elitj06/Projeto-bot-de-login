@@ -36,6 +36,7 @@ class LoginService:
         """
         self._emit_event = emit_event or self._noop_emit
         self._active_tasks: dict[str, asyncio.Task] = {}
+        self._active_browsers: dict[str, _BrowserContext] = {}
 
     @staticmethod
     def _noop_emit(user_id: str, event_type: str, data: dict) -> None:
@@ -182,6 +183,122 @@ class LoginService:
             self._active_tasks.pop(user_id, None)
             self._emit(user_id, "status", {"status": "cancelled", "message": "Login cancelado"})
             return True
+        return False
+
+    async def execute_full_flow(
+        self,
+        user_id: str,
+        filter_unit: str = "",
+        filter_date: str = "",
+        keep_alive: bool = True,
+    ) -> dict:
+        """
+        Fluxo completo: login (CAPTCHA #1) + filtro de vagas (CAPTCHA #2).
+
+        Opcionalmente mantém o browser aberto para reuso de sessão.
+        """
+        user = db.get_user(user_id)
+        if not user:
+            return {"success": False, "message": "Usuário não encontrado"}
+
+        credentials = LoginCredentials(
+            username=user["username"],
+            password=user["password_encrypted"],
+        )
+        if not credentials.is_valid():
+            return {"success": False, "message": "Credenciais inválidas"}
+
+        human_mode = bool(user["human_mode"])
+        proxy = user.get("proxy")
+        start_time = time.time()
+
+        browser_ctx = _BrowserContext(proxy, human_mode)
+
+        try:
+            self._emit(user_id, "status", {
+                "status": "connecting", "message": "Iniciando navegador...", "page": "init",
+            })
+            db.add_log(user_id, "login", "started", "Iniciando fluxo completo")
+
+            page = await browser_ctx.__aenter__()
+            bot = SeapLoginBot(page)
+
+            # Página 1: Login
+            self._emit(user_id, "status", {
+                "status": "page1", "message": "Página 1: Login + CAPTCHA...", "page": 1,
+            })
+
+            result = await bot.execute_login(
+                credentials,
+                filter_unit=filter_unit,
+                filter_date=filter_date,
+            )
+
+            elapsed = time.time() - start_time
+
+            if result.success:
+                db.deactivate_user_sessions(user_id)
+                db.create_session(user_id)
+
+                # Manter browser aberto para reuso
+                if keep_alive:
+                    self._active_browsers[user_id] = browser_ctx
+
+                parts = [f"Login OK em {elapsed:.1f}s"]
+                if result.filter_submitted:
+                    parts.append("Filtro submetido (CAPTCHA #2)")
+                db.add_log(user_id, "login", "success", " | ".join(parts))
+
+                self._emit(user_id, "status", {
+                    "status": "success",
+                    "message": f"Fluxo completo em {elapsed:.1f}s",
+                    "elapsed": round(elapsed, 1),
+                    "filter_submitted": result.filter_submitted,
+                    "page": "complete",
+                })
+            else:
+                db.add_log(user_id, "login", "failed", result.message)
+                self._emit(user_id, "status", {
+                    "status": "failed",
+                    "message": result.message,
+                    "elapsed": round(elapsed, 1),
+                })
+
+            return {
+                "success": result.success,
+                "message": result.message,
+                "elapsed_seconds": round(elapsed, 1),
+                "captcha_1": result.captcha_solution,
+                "captcha_2": result.filter_captcha_solution,
+                "filter_submitted": result.filter_submitted,
+                "filter_page_reached": result.filter_page_reached,
+            }
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            error_msg = f"{type(e).__name__}: {e}"
+            db.add_log(user_id, "login", "error", error_msg)
+            self._emit(user_id, "status", {
+                "status": "error", "message": error_msg, "elapsed": round(elapsed, 1),
+            })
+            logger.exception(f"Erro no fluxo de {user.get('username', user_id)}")
+            if not keep_alive:
+                try:
+                    await browser_ctx.__aexit__(None, None, None)
+                except Exception:
+                    pass
+            return {"success": False, "message": error_msg, "elapsed_seconds": round(elapsed, 1)}
+
+    async def close_user_browser(self, user_id: str) -> bool:
+        """Fecha o browser persistente de um usuário."""
+        ctx = self._active_browsers.pop(user_id, None)
+        if ctx:
+            try:
+                await ctx.__aexit__(None, None, None)
+                logger.info(f"Browser fechado para {user_id}")
+                return True
+            except Exception as e:
+                logger.warning(f"Erro ao fechar browser de {user_id}: {e}")
         return False
 
     def _emit(self, user_id: str, event_type: str, data: dict) -> None:

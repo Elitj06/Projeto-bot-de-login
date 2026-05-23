@@ -33,6 +33,14 @@ def load_credentials() -> LoginCredentials:
     )
 
 
+def load_filter_params() -> tuple:
+    """Carrega parâmetros de filtro do .env (página 2)."""
+    return (
+        os.getenv("SEAP_FILTER_UNIT", ""),
+        os.getenv("SEAP_FILTER_DATE", ""),
+    )
+
+
 def print_banner() -> None:
     """Exibe banner de inicialização."""
     print()
@@ -53,7 +61,11 @@ def print_result(result, elapsed_seconds: float) -> None:
     print(f"  Status:           {status}")
     print(f"  Mensagem:         {result.message}")
     if result.captcha_solution:
-        print(f"  Captcha resolvido: {result.captcha_solution}")
+        print(f"  Captcha 1:         {result.captcha_solution}")
+    if result.filter_captcha_solution:
+        print(f"  Captcha 2 (filtro): {result.filter_captcha_solution}")
+    if result.filter_submitted:
+        print(f"  Filtro submetido:  SIM")
     print(f"  Tempo total:      {elapsed_seconds:.2f}s")
     print("=" * 70)
     print()
@@ -76,13 +88,21 @@ async def run_bot() -> int:
         )
         return 1
 
+    filter_unit, filter_date = load_filter_params()
+    if filter_unit or filter_date:
+        logger.info(f"Filtro: unidade={filter_unit or '(vazio)'}, data={filter_date or '(vazio)'}")
+
     start_time = time.time()
     result = None
 
     try:
         async with StealthBrowserManager() as page:
             bot = SeapLoginBot(page)
-            result = await bot.execute_login(credentials)
+            result = await bot.execute_login(
+                credentials,
+                filter_unit=filter_unit,
+                filter_date=filter_date,
+            )
 
             # Mantém navegador aberto por alguns segundos para visualização
             if result.success:

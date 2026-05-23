@@ -41,8 +41,40 @@ class SeapConfig:
     """Configurações do site SEAP-RJ."""
     base_url: str = "https://seapsistema.rj.gov.br"
     login_path: str = "/login"
+    menu_path: str = "/FrmMenuVoluntario.aspx"
+    filter_path: str = "/FrmEventoAssociar.aspx"
     page_load_timeout_ms: int = 30000  # 30 segundos
     element_wait_timeout_ms: int = 10000  # 10 segundos
+
+
+@dataclass(frozen=True)
+class FilterConfig:
+    """Seletores da página de filtro de vagas (FrmEventoAssociar.aspx)."""
+    unit_selectors: tuple = (
+        "select#ddlUnidade",
+        "select[name*='Unidade']",
+        "select[name*='unidade']",
+    )
+    date_selectors: tuple = (
+        "input#txtData",
+        "input[type='date']",
+        "input[name*='data']",
+        "input[name*='Data']",
+    )
+    submit_selectors: tuple = (
+        "button#btnPesquisar",
+        "button:has-text('Pesquisar')",
+        "button:has-text('Buscar')",
+        "button:has-text('Filtrar')",
+        "input[type='submit']",
+        "button[type='submit']",
+    )
+    menu_link_selectors: tuple = (
+        "a[href*='FrmEventoAssociar']",
+        "a:has-text('Evento')",
+        "a:has-text('Associar')",
+        "a[href*='Evento']",
+    )
 
 
 @dataclass(frozen=True)
@@ -112,6 +144,7 @@ class PathConfig:
 # Instâncias singleton para uso em todo o projeto
 capsolver_config = CapSolverConfig()
 seap_config = SeapConfig()
+filter_config = FilterConfig()
 camoufox_config = CamoufoxConfig()
 human_behavior_config = HumanBehaviorConfig()
 path_config = PathConfig()
