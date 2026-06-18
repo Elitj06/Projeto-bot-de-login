@@ -1,25 +1,43 @@
 """
-Manipulador de captcha.
+Manipulador de captcha — SEAP WebForms.
 
-Orquestra o fluxo completo:
-1. Localizar imagem do captcha na página
-2. Capturar a imagem
-3. Enviar para CapSolver (assíncrono)
-4. Preencher o campo com comportamento humano
+O CAPTCHA do SEAP é INLINE base64 (não é tag <img>!):
+  div#captcha > div { background: url(data:image/png;base64,...) }
 
-Este módulo é o "maestro" que coordena os outros componentes.
+Fluxo:
+1. Localizar div#captcha > div
+2. Extrair base64 do CSS inline (background: url)
+3. Decodificar e salvar como PNG
+4. Gerar variantes (original, gray3x, bw3x)
+5. Enviar para cadeia de providers (CapSolver → OpenAI Vision)
+6. Preencher campo input com digitação humana
 """
+import asyncio
+import base64
+import hashlib
+import os
+import re
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from playwright.async_api import Page, ElementHandle
+from PIL import Image, ImageOps
 
-from captcha.capsolver_client import CapSolverClient
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+else:  # pragma: no cover - ambiente de teste sem Playwright
+    Page = Any
+
 from captcha.exceptions import (
     CaptchaFieldNotFoundError,
     CaptchaImageNotFoundError,
 )
-from config import path_config, seap_config
+from captcha.provider_chain import (
+    CaptchaProviderChain,
+    is_plausible_captcha_text,
+    normalize_captcha_text,
+)
+from config import captcha_flow_config, path_config
 from core.logger import LoggerFactory
 from human.human_actions import HumanActions
 
@@ -28,30 +46,20 @@ logger = LoggerFactory.get_logger(__name__)
 
 class CaptchaHandler:
     """
-    Coordena a resolução completa de captcha.
+    Resolve CAPTCHA do SEAP-RJ (ASP.NET WebForms).
 
-    Usa CapSolverClient para a parte da resolução (IA),
-    e HumanActions para preencher o campo de forma humana.
+    O captcha NÃO é uma tag <img> — é um div com background
+    base64 inline. Seletores reais:
+    - Container: div#captcha
+    - Imagem: div#captcha > div
+    - Campo input: input dentro de div#captcha ou próximo a ela
     """
 
-    # Seletores específicos do SEAP-RJ (confirmados via inspeção DOM)
-    CAPTCHA_IMAGE_SELECTORS = [
-        "div#captcha > div",         # SEAP: div com CSS background base64
-        "div#captcha",               # SEAP: container do CAPTCHA
-        "img[src*='captcha']",
-        "img[src*='Captcha']",
-        "img[id*='captcha']",
-        "img[class*='captcha']",
-    ]
-
-    CAPTCHA_INPUT_SELECTORS = [
-        "input#TextCaptcha",          # SEAP: campo de input do CAPTCHA
-        "input[name*='captcha']",
-        "input[id*='captcha']",
-        "input[placeholder*='captcha']",
-        "input[placeholder*='código']",
-        "input[placeholder*='verificação']",
-    ]
+    # Seletores reais — DOM dump (15/05/2026)
+    CAPTCHA_CONTAINER = "div#captcha"       # w=546 h=149, display=flex, 2 children
+    CAPTCHA_IMAGE_DIV = "div#captcha > div" # imagem inline base64
+    CAPTCHA_INPUT = "input#TextCaptcha"     # type=text, name=TextCaptcha
+    CAPTCHA_NEW_LINK = "a#lnkNewCaptcha"    # "Gerar Nova Imagem"
 
     CAPTCHA_REFRESH_SELECTORS = [
         "a#lnkNewCaptcha",            # SEAP: botão refresh do CAPTCHA
@@ -65,131 +73,244 @@ class CaptchaHandler:
     def __init__(
         self,
         page: Page,
-        capsolver_client: CapSolverClient,
+        solver_chain: CaptchaProviderChain,
         human_actions: HumanActions,
     ) -> None:
-        """
-        Args:
-            page: Página Playwright/Camoufox
-            capsolver_client: Cliente CapSolver (Dependency Injection)
-            human_actions: Simulador de ações humanas (DI)
-        """
         self._page = page
-        self._capsolver = capsolver_client
+        self._solver_chain = solver_chain
         self._human = human_actions
         path_config.ensure_dirs_exist()
 
     async def solve_and_fill(self) -> str:
         """
-        Executa o fluxo completo com retry: captura, resolve e preenche o captcha.
-
-        Tenta até MAX_SOLVE_ATTEMPTS vezes, refreshando o CAPTCHA entre tentativas.
+        Fluxo completo: extrai base64 → resolve → preenche.
 
         Returns:
-            Texto que foi preenchido no campo
-
-        Raises:
-            CaptchaImageNotFoundError: Imagem não localizada após todas tentativas
-            CaptchaFieldNotFoundError: Campo de input não localizado
+            Texto resolvido pelo provider chain
         """
-        logger.info("=" * 60)
-        logger.info("INICIANDO RESOLUÇÃO DE CAPTCHA")
-        logger.info("=" * 60)
+        logger.info("=" * 50)
+        logger.info("RESOLUÇÃO DE CAPTCHA — SEAP WebForms")
+        logger.info("=" * 50)
 
-        last_error = None
+        image_path = await self._extract_base64_captcha()
+        candidate_paths = self._build_captcha_variants(image_path)
 
-        for attempt in range(1, self.MAX_SOLVE_ATTEMPTS + 1):
-            logger.info(f"Tentativa {attempt}/{self.MAX_SOLVE_ATTEMPTS}")
-
-            try:
-                solution = await self._solve_once()
-                logger.info(f"✓ Captcha resolvido e preenchido: '{solution}' (tentativa {attempt})")
-                return solution
-            except (CaptchaImageNotFoundError, CaptchaFieldNotFoundError) as e:
-                last_error = e
-                logger.error(f"Tentativa {attempt} falhou: {e}")
-            except Exception as e:
-                last_error = e
-                logger.error(f"Tentativa {attempt} — erro inesperado: {e}")
-
-            # Refresh do CAPTCHA antes da próxima tentativa (se houver)
-            if attempt < self.MAX_SOLVE_ATTEMPTS:
-                await self._refresh_captcha()
-
-        raise CaptchaImageNotFoundError(
-            f"Captcha não resolvido após {self.MAX_SOLVE_ATTEMPTS} tentativas. "
-            f"Último erro: {last_error}"
-        )
-
-    async def _solve_once(self) -> str:
-        """Executa uma única tentativa de resolução: captura → resolve → preenche."""
-        # 1. Encontra a imagem do captcha
-        captcha_element = await self._locate_captcha_image()
-
-        # 2. Captura screenshot do elemento (funciona com div e img)
-        image_path = await self._save_captcha_image(captcha_element)
-
-        # 3. Pausa "pensando" como um humano olharia
         await self._human.think()
 
-        # 4. Envia para CapSolver (passa URL do site para melhor acurácia)
-        page_url = self._page.url
-        solution = await self._capsolver.solve_image_captcha(
-            image_path, website_url=page_url
-        )
-
-        # 5. Preenche o campo com digitação humana
+        solution = await self._solve_with_variants(candidate_paths)
         await self._fill_captcha_field(solution)
 
+        logger.info("CAPTCHA resolvido e preenchido: '%s'", solution)
         return solution
 
-    async def _locate_captcha_image(self) -> ElementHandle:
-        """Localiza a imagem do captcha usando vários seletores."""
-        for selector in self.CAPTCHA_IMAGE_SELECTORS:
-            try:
-                elements = await self._page.query_selector_all(selector)
-                for element in elements:
-                    is_visible = await element.is_visible()
-                    if is_visible:
-                        logger.info(f"Captcha localizado: {selector}")
-                        return element
-            except Exception as e:
-                logger.debug(f"Seletor '{selector}' falhou: {e}")
+    async def current_captcha_signature(self) -> str:
+        """Retorna uma assinatura estável da imagem atual do captcha."""
+        image_div = self._page.locator(self.CAPTCHA_IMAGE_DIV).first
+        style = await image_div.get_attribute("style") or ""
+        base64_data = self._extract_base64_from_style(style)
+        if base64_data:
+            return hashlib.sha256(base64_data.encode("utf-8")).hexdigest()
 
-        # Diagnóstico: lista o que existe na página para debug
-        await self._log_page_diagnostic()
-        raise CaptchaImageNotFoundError(
-            "Imagem do captcha não encontrada na página"
+        screenshot_bytes = await image_div.screenshot()
+        return hashlib.sha256(screenshot_bytes).hexdigest()
+
+    async def _solve_with_variants(self, candidate_paths: list[Path]) -> str:
+        """Tenta resolver o captcha em múltiplas variantes da mesma imagem."""
+        errors: list[str] = []
+
+        for candidate_path in candidate_paths:
+            try:
+                logger.info("Tentando resolver captcha com variante: %s", candidate_path.name)
+                solution = await self._solver_chain.solve_image_captcha(candidate_path)
+                normalized = normalize_captcha_text(solution)
+                if self._is_plausible_solution(normalized):
+                    logger.info(
+                        "Variante %s resolveu captcha como '%s'",
+                        candidate_path.name,
+                        normalized,
+                    )
+                    return normalized
+                errors.append(f"{candidate_path.name}: solução improvável '{normalized}'")
+            except Exception as error:
+                logger.warning(
+                    "Falha ao resolver variante %s: %s",
+                    candidate_path.name,
+                    error,
+                )
+                errors.append(f"{candidate_path.name}: {error}")
+
+        fallback_solution = await self._validate_or_fallback("", candidate_paths[0])
+        if fallback_solution:
+            return fallback_solution
+
+        raise ValueError("; ".join(errors) or "Nenhuma variante resolveu o captcha")
+
+    async def _validate_or_fallback(self, solution: str, image_path: Path) -> str:
+        """Rejeita soluções obviamente inválidas e oferece fallback manual."""
+        normalized = normalize_captcha_text(solution)
+        if self._is_plausible_solution(normalized):
+            return normalized
+
+        logger.warning(
+            "Solução de captcha rejeitada como improvável: '%s' (arquivo: %s)",
+            normalized,
+            image_path.name,
         )
 
-    async def _log_page_diagnostic(self) -> None:
-        """Loga elementos da página para diagnóstico quando CAPTCHA não é encontrado."""
+        if not self._manual_fallback_enabled():
+            raise ValueError(
+                f"Solução improvável do captcha: '{normalized}'"
+            )
+
+        if not os.isatty(0):
+            raise ValueError(
+                "Captcha inválido e fallback manual indisponível em modo não interativo"
+            )
+
+        prompt = (
+            f"Digite manualmente o CAPTCHA do arquivo {image_path}: "
+        )
+        manual = await asyncio.to_thread(input, prompt)
+        manual = normalize_captcha_text(manual)
+        if self._is_plausible_solution(manual):
+            logger.info("Captcha informado manualmente")
+            return manual
+
+        raise ValueError(f"Captcha manual inválido: '{manual}'")
+
+    def _is_plausible_solution(self, solution: str) -> bool:
+        """Valida formato mínimo para evitar lixo óbvio do solver."""
+        return is_plausible_captcha_text(solution)
+
+    @staticmethod
+    def _manual_fallback_enabled() -> bool:
+        """Mantém fallback manual como última rede de segurança."""
+        from captcha.capsolver_client import CapSolverClient
+
+        return CapSolverClient.manual_fallback_enabled()
+
+    async def _extract_base64_captcha(self) -> Path:
+        """
+        Extrai a imagem do CAPTCHA do CSS inline (background base64).
+
+        O SEAP usa: <div style="background: url(data:image/png;base64,...)">
+        Não é tag <img>, então não podemos usar screenshot de elemento
+        diretamente com boa qualidade. Extraímos o base64 do style.
+        """
+        container = self._page.locator(self.CAPTCHA_CONTAINER)
+        if not await container.is_visible(timeout=5_000):
+            raise CaptchaImageNotFoundError(
+                "Container div#captcha não encontrado"
+            )
+
+        logger.info("Container div#captcha encontrado")
+
+        image_div = self._page.locator(self.CAPTCHA_IMAGE_DIV).first
+
         try:
-            all_divs = await self._page.query_selector_all("div[id]")
-            for div in all_divs:
-                div_id = await div.get_attribute("id")
-                if div_id and "captcha" in div_id.lower():
-                    logger.debug(f"DIAG: Encontrado div#{div_id} (captcha-related)")
+            style = await image_div.get_attribute("style") or ""
+            logger.debug("Style do captcha div: %s...", style[:100])
+        except Exception as error:
+            logger.warning("Falha ao ler style: %s", error)
+            style = ""
 
-            all_inputs = await self._page.query_selector_all("input")
-            for inp in all_inputs:
-                inp_id = await inp.get_attribute("id") or ""
-                inp_name = await inp.get_attribute("name") or ""
-                inp_type = await inp.get_attribute("type") or ""
-                if any(k in (inp_id + inp_name).lower() for k in ["captcha", "text"]):
-                    logger.debug(f"DIAG: input#{inp_id} name={inp_name} type={inp_type}")
-        except Exception as e:
-            logger.debug(f"DIAG: Falha no diagnóstico: {e}")
+        base64_data = self._extract_base64_from_style(style)
 
-    async def _save_captcha_image(self, element: ElementHandle) -> Path:
-        """Captura screenshot do elemento e salva em disco."""
+        if not base64_data:
+            logger.warning("Base64 não encontrado no style — usando screenshot")
+            return await self._screenshot_fallback(container)
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"captcha_{timestamp}.png"
-        filepath = path_config.captchas_dir / filename
+        filepath = path_config.captchas_dir / f"captcha_{timestamp}.png"
 
-        await element.screenshot(path=str(filepath))
-        logger.info(f"Imagem do captcha salva: {filepath.name}")
+        image_bytes = base64.b64decode(base64_data)
+        with open(filepath, "wb") as file_handle:
+            file_handle.write(image_bytes)
 
+        logger.info(
+            "CAPTCHA extraído do base64 inline: %s (%s bytes)",
+            filepath.name,
+            len(image_bytes),
+        )
+        return filepath
+
+    def _build_captcha_variants(self, image_path: Path) -> list[Path]:
+        """Gera variantes locais para aumentar a chance de leitura do captcha."""
+        variant_map = {"original": image_path}
+
+        with Image.open(image_path) as original_image:
+            original_image.load()
+            grayscale = ImageOps.grayscale(original_image)
+            gray_upscaled = grayscale.resize(
+                (grayscale.width * 3, grayscale.height * 3),
+                Image.Resampling.LANCZOS,
+            )
+            gray_path = image_path.with_name(f"{image_path.stem}_gray3x{image_path.suffix}")
+            gray_upscaled.save(gray_path)
+            variant_map["gray3x"] = gray_path
+
+            bw_upscaled = gray_upscaled.point(
+                self._binarize_pixel,
+                mode="1",
+            )
+            bw_path = image_path.with_name(f"{image_path.stem}_bw3x{image_path.suffix}")
+            bw_upscaled.convert("L").save(bw_path)
+            variant_map["bw3x"] = bw_path
+
+        ordered_paths: list[Path] = []
+        for variant_name in captcha_flow_config.variant_order:
+            candidate_path = variant_map.get(variant_name)
+            if candidate_path and candidate_path not in ordered_paths:
+                ordered_paths.append(candidate_path)
+
+        for fallback_path in variant_map.values():
+            if fallback_path not in ordered_paths:
+                ordered_paths.append(fallback_path)
+
+        logger.info(
+            "Variantes geradas para captcha: %s",
+            ", ".join(path.name for path in ordered_paths),
+        )
+        return ordered_paths
+
+    @staticmethod
+    def _binarize_pixel(pixel: int) -> int:
+        """Converte um pixel em preto/branco usando threshold fixo."""
+        return 255 if int(pixel) >= 170 else 0
+
+    @staticmethod
+    def _extract_base64_from_style(style: str) -> str:
+        """
+        Extrai dados base64 de uma string CSS background.
+
+        Formato esperado:
+          background: url(data:image/png;base64,iVBOR...) no-repeat...
+
+        Robusto contra whitespace dentro do base64 (quebras de linha,
+        espaços) que podem ocorrer em CSS formatado pelo browser.
+        """
+        pattern = r'data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)'
+        match = re.search(pattern, style)
+        if match:
+            return re.sub(r'\s+', '', match.group(1))
+        return ""
+
+    async def _screenshot_fallback(self, container) -> Path:
+        """Fallback: screenshot do div da imagem quando base64 não disponível."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filepath = path_config.captchas_dir / f"captcha_{timestamp}.png"
+
+        try:
+            image_div = self._page.locator(self.CAPTCHA_IMAGE_DIV).first
+            if await image_div.is_visible(timeout=2000):
+                await image_div.screenshot(path=str(filepath))
+                logger.info("CAPTCHA via screenshot do image div: %s", filepath.name)
+                return filepath
+        except Exception as error:
+            logger.warning("Screenshot do image div falhou: %s, tentando container", error)
+
+        await container.screenshot(path=str(filepath))
+        logger.info("CAPTCHA via screenshot do container: %s", filepath.name)
         return filepath
 
     async def _refresh_captcha(self) -> None:
@@ -199,8 +320,7 @@ class CaptchaHandler:
                 element = self._page.locator(selector).first
                 if await element.is_visible(timeout=2000):
                     await self._human.click_humanly(selector)
-                    logger.info(f"CAPTCHA refreshed via: {selector}")
-                    # Aguarda nova imagem carregar
+                    logger.info("CAPTCHA refreshed via: %s", selector)
                     await self._human.think()
                     return
             except Exception:
@@ -209,24 +329,17 @@ class CaptchaHandler:
         logger.warning("Botão de refresh do CAPTCHA não encontrado")
 
     async def _fill_captcha_field(self, solution: str) -> None:
-        """Preenche o campo de input do captcha com digitação humana."""
-        for selector in self.CAPTCHA_INPUT_SELECTORS:
-            try:
-                elements = await self._page.query_selector_all(selector)
-                for element in elements:
-                    if await element.is_visible():
-                        # Usa digitação humana, sem typos no captcha
-                        # (não queremos errar a resposta!)
-                        await self._human.type_humanly(
-                            selector, solution, with_typos=False
-                        )
-                        logger.info(
-                            f"Campo do captcha preenchido (seletor: {selector})"
-                        )
-                        return
-            except Exception as e:
-                logger.debug(f"Seletor '{selector}' falhou: {e}")
+        """Preenche input#TextCaptcha com a solução."""
+        try:
+            element = self._page.locator(self.CAPTCHA_INPUT).first
+            if await element.is_visible(timeout=3000):
+                await element.fill("")
+                await self._human.type_humanly(self.CAPTCHA_INPUT, solution, with_typos=False)
+                logger.info("Campo TextCaptcha preenchido: '%s'", solution)
+                return
+        except Exception as error:
+            logger.warning("input#TextCaptcha falhou: %s", error)
 
         raise CaptchaFieldNotFoundError(
-            "Campo de input do captcha não encontrado"
+            "Campo input#TextCaptcha não encontrado"
         )

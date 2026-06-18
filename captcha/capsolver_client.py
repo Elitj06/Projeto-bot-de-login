@@ -40,6 +40,8 @@ class CapSolverClient:
     de outros módulos (princípio da responsabilidade única).
     """
 
+    name = "capsolver"
+
     def __init__(self) -> None:
         """Inicializa o cliente validando a configuração."""
         try:
@@ -51,17 +53,23 @@ class CapSolverClient:
         self._base_url = capsolver_config.base_url
         logger.info("CapSolverClient inicializado")
 
+    @staticmethod
+    def manual_fallback_enabled() -> bool:
+        """Indica se o modo manual pode ser usado como fallback."""
+        return capsolver_config.manual_fallback
+
     async def solve_image_captcha(
         self,
         image_path: Path,
-        website_url: str = "",
+        website_url: str | None = None,
     ) -> str:
         """
         Resolve um captcha de imagem.
 
         Args:
             image_path: Caminho do arquivo de imagem (.png/.jpg)
-            website_url: URL do site (melhora acurácia do CapSolver)
+            website_url: URL do site (melhora acurácia do CapSolver).
+                         Se None, usa o padrão do config.
 
         Returns:
             Texto resolvido do captcha (ex: "aB7xK9")
@@ -71,16 +79,24 @@ class CapSolverClient:
             CapSolverApiError: Erro retornado pela API
             CaptchaTimeoutError: Resolução demorou demais
         """
-        logger.info(f"Resolvendo captcha: {image_path.name}")
+        logger.info("Resolvendo captcha: %s", image_path.name)
 
+        effective_url = website_url or capsolver_config.seap_website_url
         image_base64 = self._encode_image_to_base64(image_path)
 
         async with aiohttp.ClientSession() as session:
-            task_id = await self._create_task(session, image_base64, website_url)
-            logger.debug(f"Tarefa criada: {task_id}")
+            task_id_or_solution = await self._create_task(
+                session, image_base64, effective_url,
+            )
 
-            solution = await self._poll_for_result(session, task_id)
-            logger.info(f"Captcha resolvido: '{solution}'")
+            # SECTION: CapSolver pode resolver direto na criação
+            if task_id_or_solution and len(task_id_or_solution) < 20:
+                logger.info("Captcha resolvido instantaneamente: '%s'", task_id_or_solution)
+                return task_id_or_solution
+
+            logger.debug("Tarefa criada: %s", task_id_or_solution)
+            solution = await self._poll_for_result(session, task_id_or_solution)
+            logger.info("Captcha resolvido: '%s'", solution)
 
             return solution
 
@@ -119,6 +135,12 @@ class CapSolverClient:
         response_data = await self._send_request(session, endpoint, payload)
         self._check_api_error(response_data)
 
+        # SECTION: CapSolver pode retornar 'ready' direto na criação
+        if response_data.get("status") == "ready" and response_data.get("solution"):
+            solution = response_data["solution"]["text"]
+            logger.info("CapSolver resolveu direto na criação: '%s'", solution)
+            return solution
+
         task_id = response_data.get("taskId")
         if not task_id:
             raise CapSolverApiError(
@@ -147,7 +169,7 @@ class CapSolverClient:
             self._check_api_error(response_data)
 
             status = response_data.get("status")
-            logger.debug(f"Polling tentativa {attempt + 1}: '{status}'")
+            logger.debug("Polling tentativa %s: '%s'", attempt + 1, status)
 
             if status == "ready":
                 solution = response_data.get("solution", {}).get("text", "")

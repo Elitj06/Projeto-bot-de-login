@@ -46,3 +46,13 @@ class CaptchaFieldNotFoundError(CaptchaError):
 class InvalidApiKeyError(CaptchaError):
     """Chave de API do CapSolver inválida ou ausente."""
     pass
+
+
+class CaptchaProviderError(CaptchaError):
+    """Falha genérica em um provider de captcha."""
+    pass
+
+
+class CaptchaProviderConfigError(CaptchaError):
+    """Provider habilitado, mas sem configuração suficiente."""
+    pass
