@@ -40,6 +40,8 @@ class CapSolverClient:
     de outros módulos (princípio da responsabilidade única).
     """
 
+    name = "capsolver"
+
     def __init__(self) -> None:
         """Inicializa o cliente validando a configuração."""
         try:
@@ -50,6 +52,11 @@ class CapSolverClient:
         self._api_key = capsolver_config.api_key
         self._base_url = capsolver_config.base_url
         logger.info("CapSolverClient inicializado")
+
+    @staticmethod
+    def manual_fallback_enabled() -> bool:
+        """Indica se o modo manual pode ser usado como fallback."""
+        return capsolver_config.manual_fallback
 
     async def solve_image_captcha(self, image_path: Path) -> str:
         """
@@ -71,10 +78,16 @@ class CapSolverClient:
         image_base64 = self._encode_image_to_base64(image_path)
 
         async with aiohttp.ClientSession() as session:
-            task_id = await self._create_task(session, image_base64)
-            logger.debug(f"Tarefa criada: {task_id}")
+            task_id_or_solution = await self._create_task(session, image_base64)
 
-            solution = await self._poll_for_result(session, task_id)
+            # CapSolver pode resolver direto na criação (retorna solução, não taskId)
+            # Verificamos se parece uma solução (texto curto) vs taskId (UUID longo)
+            if task_id_or_solution and len(task_id_or_solution) < 20:
+                logger.info(f"Captcha resolvido instantaneamente: '{task_id_or_solution}'")
+                return task_id_or_solution
+
+            logger.debug(f"Tarefa criada: {task_id_or_solution}")
+            solution = await self._poll_for_result(session, task_id_or_solution)
             logger.info(f"Captcha resolvido: '{solution}'")
 
             return solution
@@ -101,11 +114,19 @@ class CapSolverClient:
                 "type": "ImageToTextTask",
                 "body": image_base64,
                 "module": "common",
+                "websiteURL": getattr(capsolver_config, 'seap_website_url',
+                                       'https://www.seapsistema.rj.gov.br/'),
             },
         }
 
         response_data = await self._send_request(session, endpoint, payload)
         self._check_api_error(response_data)
+
+        # CapSolver pode retornar 'ready' direto na criação
+        if response_data.get("status") == "ready" and response_data.get("solution"):
+            solution = response_data["solution"]["text"]
+            logger.info(f"CapSolver resolveu direto na criação: '{solution}'")
+            return solution
 
         task_id = response_data.get("taskId")
         if not task_id:
